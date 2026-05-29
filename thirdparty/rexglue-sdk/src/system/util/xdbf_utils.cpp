@@ -53,7 +53,7 @@ XdbfBlock XdbfWrapper::GetEntry(XdbfSection section, uint64_t id) const {
       return block;
     }
   }
-  return {0};
+  return {};
 }
 
 std::string XdbfWrapper::GetStringTableEntry(XLanguage language, uint16_t string_id) const {

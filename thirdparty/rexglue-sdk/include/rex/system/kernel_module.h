@@ -1,7 +1,13 @@
 #pragma once
 /**
- * ReXGlue runtime - AC6 Recompilation project
- * Copyright (c) 2026 Tom Clay. All rights reserved.
+ ******************************************************************************
+ * Xenia : Xbox 360 Emulator Research Project                                 *
+ ******************************************************************************
+ * Copyright 2020 Ben Vanik. All rights reserved.                             *
+ * Released under the BSD license - see LICENSE in the root for more details. *
+ ******************************************************************************
+ *
+ * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
 #include <unordered_map>
@@ -21,8 +27,13 @@ class KernelModule : public XModule {
   const std::string& path() const override { return path_; }
   const std::string& name() const override { return name_; }
 
- uint32_t GetProcAddressByOrdinal(uint16_t ordinal) override;
+  uint32_t GetProcAddressByOrdinal(uint16_t ordinal, uint32_t caller_address = 0) override;
   uint32_t GetProcAddressByName(const std::string_view name) override;
+
+  /**
+   * Erase any cached thunks whose guest address falls in [lo, hi).
+   */
+  void InvalidateThunkCacheInRange(uint32_t lo, uint32_t hi);
 
  protected:
   rex::runtime::ExportResolver* export_resolver_;
@@ -32,8 +43,20 @@ class KernelModule : public XModule {
 
   rex::thread::global_critical_region global_critical_region_;
 
-  // Cache of ordinal -> thunk guest address (for XexGetProcedureAddress)
-  std::unordered_map<uint16_t, uint32_t> thunk_cache_;
+  // Cache of (caller_module_base, ordinal) -> thunk guest address.
+  struct ThunkKey {
+    uint32_t caller_module_base;
+    uint16_t ordinal;
+    bool operator==(const ThunkKey& other) const {
+      return caller_module_base == other.caller_module_base && ordinal == other.ordinal;
+    }
+  };
+  struct ThunkKeyHash {
+    std::size_t operator()(const ThunkKey& k) const noexcept {
+      return std::hash<uint64_t>{}((uint64_t(k.caller_module_base) << 16) | k.ordinal);
+    }
+  };
+  std::unordered_map<ThunkKey, uint32_t, ThunkKeyHash> thunk_cache_;
 };
 
 }  // namespace rex::system

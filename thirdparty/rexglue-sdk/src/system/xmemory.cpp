@@ -1,6 +1,12 @@
 /**
- * ReXGlue runtime - AC6 Recompilation project
- * Copyright (c) 2026 Tom Clay. All rights reserved.
+ ******************************************************************************
+ * Xenia : Xbox 360 Emulator Research Project                                 *
+ ******************************************************************************
+ * Copyright 2020 Ben Vanik. All rights reserved.                             *
+ * Released under the BSD license - see LICENSE in the root for more details. *
+ ******************************************************************************
+ *
+ * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
 #include <algorithm>
@@ -14,6 +20,8 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/math.h>
+#include <rex/stream.h>
+#include <rex/system/function_dispatcher.h>
 #include <rex/system/mmio_handler.h>
 #include <rex/system/xmemory.h>
 #include <rex/thread.h>
@@ -120,7 +128,7 @@ Memory::~Memory() {
 }
 
 bool Memory::Initialize() {
-  file_name_ = fmt::format("rexglue_memory_{}", chrono::Clock::QueryHostTickCount());
+  file_name_ = fmt::format("xenia_memory_{}", chrono::Clock::QueryHostTickCount());
 
   // Create main page file-backed mapping. This is all reserved but
   // uncommitted (so it shouldn't expand page file).
@@ -668,6 +676,27 @@ void Memory::DumpMap() {
   REXSYS_ERROR("");
 }
 
+bool Memory::Save(stream::ByteStream* stream) {
+  REXSYS_DEBUG("Serializing memory...");
+  heaps_.v00000000.Save(stream);
+  heaps_.v40000000.Save(stream);
+  heaps_.v80000000.Save(stream);
+  heaps_.v90000000.Save(stream);
+  heaps_.physical.Save(stream);
+
+  return true;
+}
+
+bool Memory::Restore(stream::ByteStream* stream) {
+  REXSYS_DEBUG("Restoring memory...");
+  heaps_.v00000000.Restore(stream);
+  heaps_.v40000000.Restore(stream);
+  heaps_.v80000000.Restore(stream);
+  heaps_.v90000000.Restore(stream);
+  heaps_.physical.Restore(stream);
+
+  return true;
+}
 
 //=============================================================================
 // Recompiled Code Function Table
@@ -675,91 +704,87 @@ void Memory::DumpMap() {
 
 bool Memory::InitializeFunctionTable(uint32_t code_base, uint32_t code_size, uint32_t image_base,
                                      uint32_t image_size) {
-  if (function_table_base_ != 0) {
-    REXSYS_ERROR("Function table already initialized");
-    return false;
-  }
-
-  // The function table lives at IMAGE_BASE + IMAGE_SIZE in guest address space.
-  // Each 4-byte-aligned guest address gets an 8-byte slot for a host function pointer.
-  // Table size = (code_size + thunk_reserve) * 2 bytes (since offset = (addr - code_base) * 2).
-  // The thunk reserve provides space for runtime-allocated thunks (e.g. XexGetProcedureAddress).
-  constexpr uint32_t kThunkReserveSize = 0x10000;  // 64KB = up to 16K thunks
-  function_table_base_ = image_base + image_size;
-  function_code_base_ = code_base;
-  function_code_size_ = code_size;
-  function_thunk_reserve_ = kThunkReserveSize;
-
+  constexpr uint32_t kThunkReserveSize = runtime::FunctionDispatcher::kThunkReserveSize;
+  uint32_t table_base = image_base + image_size;
   uint32_t table_size = (code_size + kThunkReserveSize) * 2;
 
   REXSYS_DEBUG(
       "Initializing function table at {:08X}, size {:08X} for code {:08X}-{:08X} "
       "(+{:08X} thunk reserve)",
-      function_table_base_, table_size, code_base, code_base + code_size, kThunkReserveSize);
+      table_base, table_size, code_base, code_base + code_size, kThunkReserveSize);
 
-  // Allocate the function table region in guest memory.
-  // Use the 64k page heap (v80000000) since that's where XEX code lives.
   if (!heaps_.v80000000.AllocFixed(
-          function_table_base_, table_size, 0x10000,
+          table_base, table_size, 0x10000,
           memory::kMemoryAllocationReserve | memory::kMemoryAllocationCommit,
           memory::kMemoryProtectRead | memory::kMemoryProtectWrite)) {
-    REXSYS_ERROR("Failed to allocate function table at {:08X}", function_table_base_);
-    function_table_base_ = 0;
+    REXSYS_ERROR("Failed to allocate function table at {:08X}", table_base);
     return false;
   }
 
-  // Zero-initialize the table (nullptr for all entries).
-  Zero(function_table_base_, table_size);
+  Zero(table_base, table_size);
+
+  std::lock_guard lock(function_tables_mutex_);
+  function_tables_.push_back({
+      .table_base = table_base,
+      .code_base = code_base,
+      .code_size = code_size,
+      .thunk_reserve = kThunkReserveSize,
+  });
 
   return true;
 }
 
-void Memory::SetFunction(uint32_t guest_address, PPCFunc* host_function) {
-  if (function_table_base_ == 0) {
-    REXSYS_ERROR("SetFunction called before InitializeFunctionTable");
-    return;
+bool Memory::DestroyFunctionTable(uint32_t code_base) {
+  uint32_t table_base = 0;
+  uint32_t table_size = 0;
+  uint32_t logged_code_base = 0;
+  uint32_t logged_code_size = 0;
+  {
+    std::lock_guard lock(function_tables_mutex_);
+    auto it = std::find_if(
+        function_tables_.begin(), function_tables_.end(),
+        [code_base](const FunctionTableEntry& entry) { return entry.code_base == code_base; });
+    if (it == function_tables_.end()) {
+      return false;
+    }
+    table_base = it->table_base;
+    table_size = (it->code_size + it->thunk_reserve) * 2;
+    logged_code_base = it->code_base;
+    logged_code_size = it->code_size;
+    function_tables_.erase(it);
   }
 
-  // Bounds check - addresses outside code section + thunk reserve are unexpected.
-  // IAT imports are called directly via __imp__ symbols, not through function table.
-  // Thunk reserve extends past code section for runtime-allocated thunks.
-  if (guest_address < function_code_base_ ||
-      guest_address >= function_code_base_ + function_code_size_ + function_thunk_reserve_) {
-    REXSYS_DEBUG("SetFunction: skipping {:08X} (outside code+thunk range [{:08X}, {:08X}))",
-                 guest_address, function_code_base_,
-                 function_code_base_ + function_code_size_ + function_thunk_reserve_);
-    return;
-  }
+  REXSYS_DEBUG("Destroying function table at {:08X}, size {:08X} for code {:08X}-{:08X}",
+               table_base, table_size, logged_code_base, logged_code_base + logged_code_size);
 
-  // Calculate table offset: (guest_addr - code_base) * 2
-  // This gives us the byte offset into the table for this 8-byte slot.
-  uint64_t offset = (uint64_t(guest_address) - function_code_base_) * 2;
-  uint32_t table_address = function_table_base_ + uint32_t(offset);
-
-  // Write the host function pointer to the table.
-  // The table is in guest memory but stores host pointers.
-  auto* slot = TranslateVirtual<PPCFunc**>(table_address);
-  *slot = host_function;
+  heaps_.v80000000.Release(table_base);
+  return true;
 }
 
-PPCFunc* Memory::GetFunction(uint32_t guest_address) const {
-  if (function_table_base_ == 0) {
-    return nullptr;
+bool Memory::SetFunction(uint32_t guest_address, PPCFunc* host_function) {
+  uint32_t table_address = 0;
+  {
+    std::lock_guard lock(function_tables_mutex_);
+    for (const auto& entry : function_tables_) {
+      uint32_t range_end = entry.code_base + entry.code_size + entry.thunk_reserve;
+      if (guest_address >= entry.code_base && guest_address < range_end) {
+        uint64_t offset = (uint64_t(guest_address) - entry.code_base) * 2;
+        table_address = entry.table_base + uint32_t(offset);
+        break;
+      }
+    }
   }
-
-  // Bounds check (includes thunk reserve for runtime-allocated thunks)
-  if (guest_address < function_code_base_ ||
-      guest_address >= function_code_base_ + function_code_size_ + function_thunk_reserve_) {
-    return nullptr;
+  if (!table_address) {
+    return false;
   }
+  auto* slot = TranslateVirtual<PPCFunc**>(table_address);
+  *slot = host_function;
+  return true;
+}
 
-  // Calculate table offset
-  uint64_t offset = (uint64_t(guest_address) - function_code_base_) * 2;
-  uint32_t table_address = function_table_base_ + uint32_t(offset);
-
-  // Read the host function pointer from the table.
-  auto* slot = const_cast<memory::Memory*>(this)->TranslateVirtual<PPCFunc**>(table_address);
-  return *slot;
+bool Memory::HasAnyFunctionTable() const {
+  std::lock_guard lock(function_tables_mutex_);
+  return !function_tables_.empty();
 }
 
 rex::memory::PageAccess ToPageAccess(uint32_t protect) {
@@ -908,6 +933,74 @@ uint32_t BaseHeap::GetUnreservedPageCount() {
   return count;
 }
 
+bool BaseHeap::Save(stream::ByteStream* stream) {
+  REXSYS_DEBUG("Heap {:08X}-{:08X}", heap_base_, heap_base_ + (heap_size_ - 1));
+
+  for (size_t i = 0; i < page_table_.size(); i++) {
+    auto& page = page_table_[i];
+    stream->Write(page.qword);
+    if (!page.state) {
+      // Unallocated.
+      continue;
+    }
+
+    // TODO(DrChat): write compressed with snappy.
+    if (page.state & memory::kMemoryAllocationCommit) {
+      void* addr = TranslateRelative(i << page_size_shift_);
+
+      memory::PageAccess old_access;
+      memory::Protect(addr, page_size_, memory::PageAccess::kReadWrite, &old_access);
+
+      stream->Write(addr, page_size_);
+
+      memory::Protect(addr, page_size_, old_access, nullptr);
+    }
+  }
+
+  return true;
+}
+
+bool BaseHeap::Restore(stream::ByteStream* stream) {
+  REXSYS_DEBUG("Heap {:08X}-{:08X}", heap_base_, heap_base_ + (heap_size_ - 1));
+
+  for (size_t i = 0; i < page_table_.size(); i++) {
+    auto& page = page_table_[i];
+    page.qword = stream->Read<uint64_t>();
+    if (!page.state) {
+      // Unallocated.
+      continue;
+    }
+
+    memory::PageAccess page_access = memory::PageAccess::kNoAccess;
+    if ((page.current_protect & memory::kMemoryProtectRead) &&
+        (page.current_protect & memory::kMemoryProtectWrite)) {
+      page_access = memory::PageAccess::kReadWrite;
+    } else if (page.current_protect & memory::kMemoryProtectRead) {
+      page_access = memory::PageAccess::kReadOnly;
+    }
+
+    // Commit the memory if it isn't already. We do not need to reserve any
+    // memory, as the mapping has already taken care of that.
+    if (page.state & memory::kMemoryAllocationCommit) {
+      rex::memory::AllocFixed(TranslateRelative(i << page_size_shift_), page_size_,
+                              memory::AllocationType::kCommit, memory::PageAccess::kReadWrite);
+    }
+
+    // Now read into memory. We'll set R/W protection first, then set the
+    // protection back to its previous state.
+    // TODO(DrChat): read compressed with snappy.
+    if (page.state & memory::kMemoryAllocationCommit) {
+      void* addr = TranslateRelative(i << page_size_shift_);
+      rex::memory::Protect(addr, page_size_, memory::PageAccess::kReadWrite, nullptr);
+
+      stream->Read(addr, page_size_);
+
+      rex::memory::Protect(addr, page_size_, page_access, nullptr);
+    }
+  }
+
+  return true;
+}
 
 void BaseHeap::Reset() {
   // TODO(DrChat): protect pages.

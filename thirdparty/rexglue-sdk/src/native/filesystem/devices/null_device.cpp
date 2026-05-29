@@ -20,7 +20,7 @@ NullDevice::NullDevice(const std::string& mount_path,
 NullDevice::~NullDevice() = default;
 
 bool NullDevice::Initialize() {
-  auto root_entry = new NullEntry(this, nullptr, mount_path_);
+  auto root_entry = new NullEntry(this, nullptr, "");
   root_entry->attributes_ = kFileAttributeDirectory;
   root_entry_ = std::unique_ptr<Entry>(root_entry);
 
@@ -37,7 +37,7 @@ void NullDevice::Dump(string::StringBuffer* string_buffer) {
 }
 
 Entry* NullDevice::ResolvePath(const std::string_view path) {
-  REXFS_INFO("NullDevice::ResolvePath({})", path);
+  REXFS_DEBUG("NullDevice::ResolvePath({})", path);
 
   auto root = root_entry_.get();
   if (path.empty()) {

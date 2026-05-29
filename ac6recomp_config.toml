@@ -10670,3 +10670,58 @@ registers = ["r3", "r4", "r5", "r6", "ctr"]
 address = 0x821CCC5C
 name = "ac6PacDecoderDumpHook"
 registers = ["r4", "r10", "r11", "r31"]
+
+# ----------------------------------------------------------------------------
+# Codec internal tracing probes.
+#
+# Wired at the entries of every PPC function involved in mode-1 decoding so we
+# can observe the runtime state at each transition. Gated by env var
+# AC6_TRACE_CODEC_INTERNALS=1 and rate-limited (first 3 mode-1 invocations
+# only) so log volume stays bounded. Used to confirm whether the bytes the
+# codec actually consumes match the .compressed.bin files we dump.
+#
+# Hook pipeline (top-down):
+#   sub_822CF510 codec dispatcher  -> ac6PacCodecDispatchProbe
+#   sub_822CF2F8 mode-1 entry      -> ac6PacMode1EntryProbe (one-shot ROM dump
+#                                     of static-Huffman tables at 0x8243D1F8 /
+#                                     0x8243DDF8)
+#   sub_822CCB50 bit fetcher       -> ac6PacBitFetcherProbe
+#   sub_822CEAC0 dynamic header    -> ac6PacDynamicHeaderProbe
+#   sub_822CDB38 tree builder      -> ac6PacTreeBuilderProbe (dumps the 19
+#                                     u16 code-length array at r3+108)
+#   sub_822CD068 / sub_822CD758    -> ac6PacBlockConsumerProbe
+# ----------------------------------------------------------------------------
+[[midasm_hook]]
+address = 0x822CF510
+name = "ac6PacCodecDispatchProbe"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x822CF2F8
+name = "ac6PacMode1EntryProbe"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x822CCB50
+name = "ac6PacBitFetcherProbe"
+registers = ["r3", "r4", "r5"]
+
+[[midasm_hook]]
+address = 0x822CEAC0
+name = "ac6PacDynamicHeaderProbe"
+registers = ["r3", "r4"]
+
+[[midasm_hook]]
+address = 0x822CDB38
+name = "ac6PacTreeBuilderProbe"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x822CD068
+name = "ac6PacBlockConsumerProbe"
+registers = ["r3"]
+
+[[midasm_hook]]
+address = 0x822CD758
+name = "ac6PacBlockConsumerProbe"
+registers = ["r3"]

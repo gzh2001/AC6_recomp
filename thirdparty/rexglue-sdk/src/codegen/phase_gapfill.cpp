@@ -249,7 +249,8 @@ void cleanupAbsorbedGapFills(CodegenContext& ctx) {
 
 namespace phases {
 
-VoidResult GapFill(CodegenContext& ctx) {
+VoidResult GapFill(CodegenContext& ctx, ProgressReporter* reporter) {
+  (void)reporter;
   size_t lastCount = 0;
   size_t iteration = 0;
   

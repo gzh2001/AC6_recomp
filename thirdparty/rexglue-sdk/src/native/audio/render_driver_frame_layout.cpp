@@ -4,23 +4,19 @@
 #include <native/audio/render_driver_frame_layout.h>
 
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 
 #include <native/math.h>
 #include <rex/cvar.h>
-#include <rex/logging.h>
 #include <rex/types.h>
 
-REXCVAR_DEFINE_STRING(audio_render_driver_layout, "auto", "Audio",
-                      "Layout for XAudio render-driver frames: auto, planar, or interleaved")
+REXCVAR_DEFINE_STRING(audio_render_driver_layout, "planar", "Audio",
+                      "Layout for XAudio render-driver frames: planar, interleaved, or auto")
     .allowed({"auto", "planar", "interleaved"})
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace rex::audio::conversion {
 namespace {
-
-std::atomic<int> g_detected_layout{0};
 
 float DecodeSanitizedSample(const float* input, const size_t ch_sample_count, const size_t sample,
                             const size_t channel, const RenderDriverFrameLayout layout) {
@@ -41,7 +37,6 @@ struct LayoutScore {
 
 struct LayoutDetectionResult {
   RenderDriverFrameLayout layout = RenderDriverFrameLayout::kPlanar;
-  bool cacheable = false;
 };
 
 LayoutScore ScoreLayout(const float* input, const size_t ch_sample_count,
@@ -77,15 +72,14 @@ LayoutDetectionResult DetectFrameLayout(const float* input, const size_t ch_samp
 
   constexpr double kDecisionRatio = 0.75;
   if (planar.continuity * kDecisionRatio < interleaved.continuity) {
-    return {RenderDriverFrameLayout::kPlanar, true};
+    return {RenderDriverFrameLayout::kPlanar};
   }
   if (interleaved.continuity * kDecisionRatio < planar.continuity) {
-    return {RenderDriverFrameLayout::kInterleaved, true};
+    return {RenderDriverFrameLayout::kInterleaved};
   }
 
   return {planar.continuity <= interleaved.continuity ? RenderDriverFrameLayout::kPlanar
-                                                      : RenderDriverFrameLayout::kInterleaved,
-          false};
+                                                      : RenderDriverFrameLayout::kInterleaved};
 }
 
 }  // namespace
@@ -100,28 +94,7 @@ RenderDriverFrameLayout ResolveRenderDriverFrameLayout(const float* input,
     return RenderDriverFrameLayout::kInterleaved;
   }
 
-  const int cached_layout = g_detected_layout.load(std::memory_order_acquire);
-  if (cached_layout == 1) {
-    return RenderDriverFrameLayout::kPlanar;
-  }
-  if (cached_layout == 2) {
-    return RenderDriverFrameLayout::kInterleaved;
-  }
-
-  const LayoutDetectionResult detection = DetectFrameLayout(input, ch_sample_count);
-  if (!detection.cacheable) {
-    return detection.layout;
-  }
-
-  const RenderDriverFrameLayout detected_layout = detection.layout;
-  const int detected_value =
-      detected_layout == RenderDriverFrameLayout::kInterleaved ? 2 : 1;
-  const int previous =
-      g_detected_layout.exchange(detected_value, std::memory_order_acq_rel);
-  if (previous == 0) {
-    REXAPU_INFO("Audio render-driver layout auto-detected: {}", ToString(detected_layout));
-  }
-  return detected_layout;
+  return DetectFrameLayout(input, ch_sample_count).layout;
 }
 
 const char* ToString(const RenderDriverFrameLayout layout) {

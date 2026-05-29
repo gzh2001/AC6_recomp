@@ -45,3 +45,29 @@ void ac6PacDecoderDumpHook(PPCRegister& r4, PPCRegister& r10, PPCRegister& r11,
 void Ac6DumpPacDecodedEntry(uint16_t entry_index, uint8_t codec_mode,
                             uint32_t compressed_size, uint32_t decompressed_size,
                             uint32_t source_offset, const uint8_t* host_data);
+
+// ---------------------------------------------------------------------------
+// Codec-internals tracing probes.
+//
+// Each probe is a mid-asm hook on a specific PPC function entry inside the
+// mode-1 decoder pipeline. All probes are gated by env var
+// AC6_TRACE_CODEC_INTERNALS=1 and rate-limited to the first 3 mode-1 decoder
+// invocations so log volume stays manageable.
+//
+// Decoder pipeline (top-down):
+//   sub_822CF510 codec dispatcher  -> ac6PacCodecDispatchProbe
+//   sub_822CF2F8 mode-1 entry      -> ac6PacMode1EntryProbe (one-shot ROM dump)
+//   sub_822CCB50 bit fetcher       -> ac6PacBitFetcherProbe
+//   sub_822CEAC0 dynamic header    -> ac6PacDynamicHeaderProbe
+//   sub_822CDB38 tree builder      -> ac6PacTreeBuilderProbe
+//   sub_822CD068 / sub_822CD758    -> ac6PacBlockConsumerProbe
+//
+// The bit-fetcher probe is the highest-value: it logs every byte the codec
+// consumes, which lets us verify whether the .compressed.bin bytes are read
+// verbatim or transformed before reaching the bit buffer.
+void ac6PacCodecDispatchProbe(PPCRegister& r3);
+void ac6PacMode1EntryProbe(PPCRegister& r3);
+void ac6PacBitFetcherProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5);
+void ac6PacDynamicHeaderProbe(PPCRegister& r3, PPCRegister& r4);
+void ac6PacTreeBuilderProbe(PPCRegister& r3);
+void ac6PacBlockConsumerProbe(PPCRegister& r3);

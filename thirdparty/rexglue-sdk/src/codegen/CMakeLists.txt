@@ -24,6 +24,7 @@ set(CODEGEN_CORE_SOURCES
     phase_merge.cpp
     phase_validate.cpp
     template_registry.cpp
+    manifest.cpp
 )
 
 # PPC architecture sources (merged from rexarch)
@@ -85,4 +86,3 @@ target_link_libraries(rexcodegen
         xxHash::xxhash
         simde
 )
-

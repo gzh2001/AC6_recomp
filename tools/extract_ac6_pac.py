@@ -6,7 +6,12 @@ import hashlib
 import json
 import os
 import struct
+import sys
+import zlib
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ac6_mode1_codec
 
 
 HEADER_SIZE = 8
@@ -56,7 +61,8 @@ def sha256_path(path: Path) -> str:
     return h.hexdigest()
 
 
-def extract_entries(asset_root: Path, output_root: Path, entries: list[dict], include_compressed: bool) -> dict:
+def extract_entries(asset_root: Path, output_root: Path, entries: list[dict],
+                    include_compressed: bool, decompress: bool) -> dict:
     pac_bytes = {
         "DATA00.PAC": asset_root.joinpath("DATA00.PAC").read_bytes(),
         "DATA01.PAC": asset_root.joinpath("DATA01.PAC").read_bytes(),
@@ -70,6 +76,8 @@ def extract_entries(asset_root: Path, output_root: Path, entries: list[dict], in
     manifest_entries = []
     extracted_count = 0
     skipped_count = 0
+    decompressed_count = 0
+    decode_failures = 0
 
     for entry in entries:
         if entry["storage_kind"] == "compressed" and not include_compressed:
@@ -87,20 +95,41 @@ def extract_entries(asset_root: Path, output_root: Path, entries: list[dict], in
             )
 
         blob = pac_bytes[pac_name][start:end]
+        is_compressed = entry["storage_kind"] == "compressed"
+
+        # Offline decode of compressed (mode-1) entries: pi-keygen descramble +
+        # raw DEFLATE. Raw entries are written as-is.
+        payload = blob
+        record = {**entry}
+        if is_compressed and decompress:
+            try:
+                payload = ac6_mode1_codec.decompress_entry(
+                    blob, entry["index"], expected_size=entry["decompressed_size"]
+                )
+                record["decompressed"] = True
+                decompressed_count += 1
+            except (zlib.error, ValueError) as exc:
+                record["decompressed"] = False
+                record["decode_error"] = str(exc)
+                decode_failures += 1
+
         subdir = files_dir / pac_name.replace(".PAC", "") / entry["storage_kind"]
         subdir.mkdir(parents=True, exist_ok=True)
-        out_path = subdir / f"{entry['index']:04d}.bin"
-        out_path.write_bytes(blob)
+        suffix = ".bin"
+        if is_compressed and decompress and record.get("decompressed"):
+            suffix = ".decompressed.bin"
+        out_path = subdir / f"{entry['index']:04d}{suffix}"
+        out_path.write_bytes(payload)
 
-        manifest_entries.append(
+        record.update(
             {
-                **entry,
                 "extracted": True,
                 "path": str(out_path.relative_to(output_root)).replace("\\", "/"),
-                "sha256": hashlib.sha256(blob).hexdigest(),
-                "head_hex": blob[:32].hex(),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "head_hex": payload[:32].hex(),
             }
         )
+        manifest_entries.append(record)
         extracted_count += 1
 
     manifest = {
@@ -109,7 +138,10 @@ def extract_entries(asset_root: Path, output_root: Path, entries: list[dict], in
         "entry_count": len(entries),
         "extracted_count": extracted_count,
         "skipped_count": skipped_count,
+        "decompressed_count": decompressed_count,
+        "decode_failures": decode_failures,
         "include_compressed": include_compressed,
+        "decompress": decompress,
         "archives": {
             name: {
                 "size": size,
@@ -138,12 +170,22 @@ def main() -> int:
         action="store_true",
         help="Extract only entries marked raw in DATA.TBL and skip compressed entries",
     )
+    parser.add_argument(
+        "--decompress",
+        action="store_true",
+        help="Decode compressed (mode-1) entries offline (pi-keygen descramble + raw DEFLATE) "
+             "instead of writing the raw scrambled blob",
+    )
     args = parser.parse_args()
 
     asset_root = args.asset_root.resolve()
     output_root = args.output.resolve()
     entries = parse_tbl(asset_root / "DATA.TBL")
-    manifest = extract_entries(asset_root, output_root, entries, include_compressed=not args.raw_only)
+    manifest = extract_entries(
+        asset_root, output_root, entries,
+        include_compressed=not args.raw_only,
+        decompress=args.decompress,
+    )
 
     print(
         json.dumps(
@@ -151,6 +193,8 @@ def main() -> int:
                 "entry_count": manifest["entry_count"],
                 "extracted_count": manifest["extracted_count"],
                 "skipped_count": manifest["skipped_count"],
+                "decompressed_count": manifest["decompressed_count"],
+                "decode_failures": manifest["decode_failures"],
                 "output_root": manifest["output_root"],
             },
             indent=2,

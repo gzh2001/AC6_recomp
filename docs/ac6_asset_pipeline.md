@@ -10,19 +10,36 @@ It automates these stages:
 4. `SWG` UI metadata parsing
 5. `NTXR` texture export
 
-## Important Limitation
+## Offline mode-1 decompression (solved)
 
-The pipeline can process **all PAC entries and all runtime dumps you already have**, but it **cannot yet offline-decompress every compressed PAC entry in the archive** by itself.
+The pipeline can now **decompress every compressed PAC entry fully offline**, with
+no need to launch the game. The AC6 "mode-1" codec has been reverse-engineered:
 
-That means:
+1. **Descramble**: stored bytes are XORed with an 8-byte repeating pad. The pad
+   for a DATA.TBL entry is derived from the entry's table index:
 
-- Raw PAC entries are handled in one pass.
-- Runtime-decoded assets are handled in one pass.
-- If a compressed asset has never been decoded by the game and never appeared in `out/ac6_pac_runtime_dump`, this pipeline cannot currently materialize it.
+   ```
+   pad(index) = pi_words[2*(index % 256) + 1] ++ pi_words[2*(index % 256) + 2]
+   ```
 
-So the pipeline is "all at once" for the **current corpus**, not yet "decode the entire PAC archive from scratch with no runtime help".
+   where `pi_words` are the big-endian base-2^32 words of the fractional part of
+   pi (`0x243F6A88 0x85A308D3 0x13198A2E ...`). The game generates these at runtime
+   via Machin's formula (`4*arctan(1/5) - arctan(1/239)`); the offline tool simply
+   computes pi to the needed precision.
 
-If you want truly complete one-shot extraction of every compressed PAC asset without launching the game, the remaining missing piece is an offline implementation of AC6's mode-1 decompressor.
+2. **Inflate**: the descrambled bytes are raw DEFLATE (RFC 1951, no zlib/gzip
+   wrapper) -- `zlib.decompress(data, wbits=-15)`.
+
+This is implemented in `tools/ac6_mode1_codec.py` and wired into the extractor:
+
+```powershell
+python .\tools\extract_ac6_pac.py <asset_root> --decompress
+```
+
+Compressed entries are written as `files/DATA0x/compressed/<index>.decompressed.bin`
+and the manifest records `decompressed_count` / `decode_failures`. Playing the game
+to pre-populate `out/ac6_pac_runtime_dump` is no longer required for compressed-entry
+extraction; it remains useful only for assets synthesized at runtime.
 
 ## Prerequisites
 

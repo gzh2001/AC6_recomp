@@ -441,6 +441,23 @@ void Ac6DumpPacDecodedEntry(uint16_t entry_index, uint8_t codec_mode, uint32_t c
         path.string());
 }
 
+std::vector<uint8_t> Ac6PeekCompressedHead(uint32_t entry_index, std::size_t max_bytes) {
+    if (max_bytes == 0) return {};
+    auto rec = ac6_pac_index::GetByIndex(entry_index);
+    if (!rec || rec->compressed_size == 0) return {};
+
+    const uint32_t want = static_cast<uint32_t>(
+        std::min<size_t>(max_bytes, static_cast<size_t>(rec->compressed_size)));
+    const uint32_t start = rec->offset;
+    if (want == 0 || start > UINT32_MAX - want) return {};
+    const uint32_t end = start + want;
+
+    std::scoped_lock lock(ArchiveMutex());
+    auto& archive = GetArchive(rec->is_data01);
+    if (!IsRangeCovered(archive.chunks, start, end)) return {};
+    return GatherRange(archive.chunks, start, end);
+}
+
 void Ac6OnPacReadCompleted(std::string_view path, uint32_t guest_buffer, uint64_t file_offset,
                            uint32_t bytes_read) {
     if (!DumpingEnabled() || guest_buffer == 0 || bytes_read == 0) return;

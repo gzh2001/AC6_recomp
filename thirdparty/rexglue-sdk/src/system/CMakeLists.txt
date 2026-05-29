@@ -20,6 +20,8 @@ set(REXSYSTEM_SOURCES
     xsymboliclink.cpp
     xobject.cpp
     xmodule.cpp
+    shared_library.cpp
+    guest_path.cpp
 
     # Utilities
     util/object_table.cpp
@@ -70,6 +72,8 @@ target_link_libraries(rexsystem
 
 if(WIN32)
     target_link_libraries(rexsystem PRIVATE ws2_32)
+elseif(UNIX)
+    target_link_libraries(rexsystem PRIVATE dl)
 endif()
 
 # Propagate graphics backend selection

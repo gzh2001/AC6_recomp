@@ -45,6 +45,10 @@ struct PPCContext;
 // Function signature for recompiled PPC functions
 using PPCFunc = void(PPCContext& ctx, uint8_t* base);
 
+namespace rex::runtime {
+PPCFunc* ResolveIndirectFunction(uint32_t guest_address);
+}  // namespace rex::runtime
+
 //=============================================================================
 // Compiler-Specific Intrinsics
 //=============================================================================
