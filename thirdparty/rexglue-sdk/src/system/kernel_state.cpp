@@ -499,7 +499,8 @@ object_ref<UserModule> KernelState::GetExecutableModule() {
   return executable_module_;
 }
 
-void KernelState::SetExecutableModule(object_ref<UserModule> module) {
+void KernelState::SetExecutableModule(object_ref<UserModule> module,
+                                      const bool start_dispatch_thread) {
   if (module.get() == executable_module_.get()) {
     return;
   }
@@ -563,7 +564,7 @@ void KernelState::SetExecutableModule(object_ref<UserModule> module) {
   // Spin up deferred dispatch worker.
   // TODO(benvanik): move someplace more appropriate (out of ctor, but around
   // here).
-  if (!dispatch_thread_running_) {
+  if (start_dispatch_thread && !dispatch_thread_running_) {
     dispatch_thread_running_ = true;
     dispatch_thread_ = object_ref<XHostThread>(new XHostThread(this, 128 * 1024, 0, [this]() {
       auto global_lock = global_critical_region_.AcquireDeferred();

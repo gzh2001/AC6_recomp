@@ -296,7 +296,7 @@ X_STATUS Runtime::LoadXexImage(const std::string_view module_path) {
     return status;
   }
 
-  kernel_state_->SetExecutableModule(module);
+  kernel_state_->SetExecutableModule(module, !tool_mode_);
   REXSYS_DEBUG("  XEX image loaded successfully");
   return X_STATUS_SUCCESS;
 }

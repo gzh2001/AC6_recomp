@@ -245,7 +245,7 @@ class KernelState {
 
   object_ref<XThread> LaunchModule(object_ref<UserModule> module);
   object_ref<UserModule> GetExecutableModule();
-  void SetExecutableModule(object_ref<UserModule> module);
+  void SetExecutableModule(object_ref<UserModule> module, bool start_dispatch_thread = true);
   object_ref<UserModule> LoadUserModule(const std::string_view name, bool call_entry = true);
   void UnloadUserModule(const object_ref<UserModule>& module, bool call_entry = true);
 
