@@ -129,6 +129,7 @@ void SpirvShaderTranslator::Reset() {
   output_per_vertex_member_cull_distance_ = UINT32_MAX;
   type_output_per_vertex_ = spv::NoResult;
   output_per_vertex_ = spv::NoResult;
+  output_or_var_fragment_depth_ = spv::NoResult;
   output_fragment_depth_ = spv::NoResult;
   output_fragment_sample_mask_ = spv::NoResult;
 
@@ -2923,6 +2924,7 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
                                                         type_float_, "gl_FragDepth");
       builder_->addDecoration(output_fragment_depth_, spv::DecorationBuiltIn,
                               spv::BuiltInFragDepth);
+      builder_->addDecoration(output_fragment_depth_, spv::DecorationInvariant);
       main_interface_.push_back(output_fragment_depth_);
     }
     if (alpha_to_coverage_possible && features_.sample_rate_shading) {
@@ -2957,17 +2959,18 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
     // to the execution mask GPUs naturally have.
   }
 
+  if (current_shader().writes_depth()) {
+    output_or_var_fragment_depth_ =
+        builder_->createVariable(spv::NoPrecision, spv::StorageClassFunction, type_float_,
+                                 "xe_var_fragment_depth", const_float_0_);
+  }
+
   if (edram_fragment_shader_interlock_) {
     // Initialize color output variables with fragment shader interlock.
     std::fill(output_or_var_fragment_data_.begin(), output_or_var_fragment_data_.end(),
               spv::NoResult);
-    var_main_fragment_depth_ = spv::NoResult;
+    var_main_fragment_depth_ = output_or_var_fragment_depth_;
     var_main_fsi_color_written_ = spv::NoResult;
-    if (current_shader().writes_depth()) {
-      var_main_fragment_depth_ =
-          builder_->createVariable(spv::NoPrecision, spv::StorageClassFunction, type_float_,
-                                   "xe_var_fragment_depth", const_float_0_);
-    }
     uint32_t color_targets_written = current_shader().writes_color_targets();
     if (color_targets_written) {
       static const char* const kFragmentDataVariableNames[] = {
@@ -3616,8 +3619,7 @@ void SpirvShaderTranslator::StoreResult(const InstructionResult& result, spv::Id
       // Writes X to scalar gl_FragDepth.
       assert_true(used_write_mask == 0b0001);
       assert_true(current_shader().writes_depth());
-      target_pointer =
-          edram_fragment_shader_interlock_ ? var_main_fragment_depth_ : output_fragment_depth_;
+      target_pointer = output_or_var_fragment_depth_;
       // Guest depth output is expected to be [0, 1].
       is_clamped = true;
     } break;

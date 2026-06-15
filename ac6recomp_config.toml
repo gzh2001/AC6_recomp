@@ -10610,6 +10610,36 @@ name = "ac6PresentIntervalHook"
 registers = ["r10"]
 jump_address_on_true = 0x821EFF74
 
+# Cutscene clamp signal.
+#
+# sub_82184460 is CAce6DemoManager::Exec (the per-frame update of the in-engine
+# cinematics system, NU::FW::IngameCinematics). It runs once per game frame ONLY
+# while a cutscene is playing (the demo task is scheduled when a cutscene starts
+# and removed when it ends), and drives the Sequencer that advances the cut
+# timeline (sub_821848A0 -> off_823F9B28 vtable[101] step / [102] is-done).
+#
+# Firing this hook stamps a "cinematic ticked this frame" timestamp; the FPS
+# unlock hooks (present-interval / delta-divisor / flip) suspend themselves while
+# that stamp is fresh, so cutscenes render at the game's native ~30fps cadence
+# and don't run at double speed. Gated at runtime by the ac6_cutscene_clamp CVar.
+[[midasm_hook]]
+address = 0x82184460
+name = "ac6CinematicTickHook"
+registers = ["r3"]
+
+# Cutscene clamp signal (EM variant).
+#
+# sub_821856F8 is CX360DemoManagerEM::Exec - the per-frame update of the "Event
+# Movie" in-engine cinematics manager (the DD manager above drives a different
+# demo path; the in-mission story cutscenes go through EM). Same shape as the DD
+# Exec: state 0 -> load (sub_821857B0), state 1 -> cinematic update sub_82186080
+# (accumulate delta -> step Sequencer off_823F9B28). Runs once per frame only
+# while an EM cutscene is scheduled. Same clamp signal as the DD hook.
+[[midasm_hook]]
+address = 0x821856F8
+name = "ac6CinematicTickHook"
+registers = ["r3"]
+
 # AC6 PAC stream-worker dispatch probe.
 #
 # rex_sub_82343E18 is the PAC streamer's queue pump. At 0x82343E78 it issues a

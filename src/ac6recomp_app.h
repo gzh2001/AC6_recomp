@@ -1,12 +1,23 @@
 #pragma once
 
 #include <memory>
+#include <string>
 
+#include <rex/cvar.h>
+#include <rex/logging.h>
 #include <rex/rex_app.h>
+#if REX_HAS_D3D12
+#include <rex/graphics/d3d12/graphics_system.h>
+#endif
+#if REX_HAS_VULKAN
+#include <rex/graphics/vulkan/graphics_system.h>
+#endif
 
 #include "ac6_native_graphics.h"
 #include "ac6_native_graphics_overlay.h"
 #include "generated/ac6recomp_config.h"
+
+REXCVAR_DECLARE(std::string, ac6_graphics_backend);
 
 class Ac6recompApp : public rex::ReXApp {
  public:
@@ -27,6 +38,26 @@ class Ac6recompApp : public rex::ReXApp {
   void OnPreSetup(rex::RuntimeConfig& config) override {
     REXLOG_INFO("Ac6recompApp::OnPreSetup");
     rex::ReXApp::OnPreSetup(config);
+
+    const std::string requested_backend = REXCVAR_GET(ac6_graphics_backend);
+#if REX_HAS_VULKAN
+    if (requested_backend == "vulkan" || requested_backend == "auto") {
+      config.graphics =
+          REX_GRAPHICS_BACKEND(rex::graphics::vulkan::VulkanGraphicsSystem);
+      REXLOG_INFO("Ac6recompApp: selected Vulkan graphics backend");
+      return;
+    }
+#endif
+#if REX_HAS_D3D12
+    if (requested_backend == "d3d12" || requested_backend == "auto") {
+      config.graphics =
+          REX_GRAPHICS_BACKEND(rex::graphics::d3d12::D3D12GraphicsSystem);
+      REXLOG_INFO("Ac6recompApp: selected D3D12 graphics backend");
+      return;
+    }
+#endif
+    REXLOG_WARN("Ac6recompApp: requested graphics backend '{}' is not available in this build",
+                requested_backend);
   }
 
   void OnPostSetup() override {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 #include <rex/memory.h>
@@ -23,6 +24,7 @@ struct NativeGraphicsRuntimeStatus {
   GraphicsRuntimeMode mode = GraphicsRuntimeMode::kHybridBackendFixes;
   bool capture_enabled = false;
   bool authoritative_renderer_active = false;
+  std::string authoritative_renderer_name;
   uint32_t draw_resolution_scale_x = 1;
   uint32_t draw_resolution_scale_y = 1;
   bool direct_host_resolve = true;

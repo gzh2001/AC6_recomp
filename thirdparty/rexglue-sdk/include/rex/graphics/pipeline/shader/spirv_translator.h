@@ -33,7 +33,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
     // TODO(Triang3l): Change to 0xYYYYMMDD once it's out of the rapid
     // prototyping stage (easier to do small granular updates with an
     // incremental counter).
-    static constexpr uint32_t kVersion = 12;
+    static constexpr uint32_t kVersion = 13;
 
     enum class DepthStencilMode : uint32_t {
       kNoModifiers,
@@ -577,6 +577,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
   void StartFragmentShaderBeforeMain();
   void StartFragmentShaderInMain();
   void CompleteFragmentShaderInMain();
+  void CompleteFragmentShader_DSV_DepthTo24Bit();
 
   // Updates the current flow control condition (to be called in the beginning
   // of exec and in jumps), closing the previous conditionals if needed.
@@ -946,6 +947,10 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // With fragment shader interlock, variables in the main function.
   // Otherwise, framebuffer color attachment outputs.
   std::array<spv::Id, xenos::kMaxColorRenderTargets> output_or_var_fragment_data_;
+  // Function-scoped staging variable for guest oDepth writes. FSI consumes this
+  // through var_main_fragment_depth_; FBO copies it to gl_FragDepth after guest
+  // control flow is complete.
+  spv::Id output_or_var_fragment_depth_;
   // For host render targets and only when needed - float.
   spv::Id output_fragment_depth_;
   // For host render targets and only when needed - int[1].

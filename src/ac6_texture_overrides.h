@@ -7,7 +7,11 @@
 #include <string_view>
 #include <vector>
 
-#include <rex/ui/d3d12/d3d12_api.h>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <d3d12.h>
+#include <dxgiformat.h>
 
 namespace ac6::textures {
 

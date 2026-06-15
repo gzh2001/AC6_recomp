@@ -736,7 +736,59 @@ def extract_r8_visible(payload: bytes, storage_width: int, visible_width: int, v
     return b"".join(rows)
 
 
-def export_ntxr(input_path: Path, output_root: Path, source_root: Path) -> dict:
+def existing_export_entry(input_path: Path, output_root: Path, source_root: Path) -> dict | None:
+    output_base = output_root / input_path.relative_to(source_root)
+    json_path = output_base.with_suffix(".json")
+    dds_path = output_base.with_suffix(".dds")
+    preview_path = output_base.with_suffix(".tga")
+    png_path = output_base.with_suffix(".png")
+    if not (json_path.exists() and dds_path.exists() and preview_path.exists() and png_path.exists()):
+        return None
+
+    try:
+        metadata = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    entry = {
+        "source": str(input_path.relative_to(source_root)).replace("\\", "/"),
+        "size": input_path.stat().st_size,
+        "status": "exported",
+        "resumed": True,
+        "layout": metadata.get("layout"),
+        "format": metadata.get("format"),
+        "dds": str(dds_path.relative_to(output_root)).replace("\\", "/"),
+        "preview": str(preview_path.relative_to(output_root)).replace("\\", "/"),
+        "preview_png": str(png_path.relative_to(output_root)).replace("\\", "/"),
+        "metadata": str(json_path.relative_to(output_root)).replace("\\", "/"),
+        "visible_width": metadata.get("visible_width"),
+        "visible_height": metadata.get("visible_height"),
+        "storage_width": metadata.get("storage_width"),
+        "storage_height": metadata.get("storage_height"),
+        "mip_count": metadata.get("mip_count"),
+        "notes": metadata.get("notes"),
+    }
+    raw_png = metadata.get("raw_png")
+    if raw_png:
+        raw_path = json_path.with_name(raw_png)
+        if raw_path.exists():
+            entry["raw_preview_png"] = str(raw_path.relative_to(output_root)).replace("\\", "/")
+    alpha_png = metadata.get("alpha_png")
+    if alpha_png:
+        alpha_path = json_path.with_name(alpha_png)
+        if alpha_path.exists():
+            entry["alpha_preview_png"] = str(alpha_path.relative_to(output_root)).replace("\\", "/")
+    if metadata.get("face_pngs"):
+        entry["face_pngs"] = metadata["face_pngs"]
+    return entry
+
+
+def export_ntxr(input_path: Path, output_root: Path, source_root: Path, *, skip_existing: bool = False) -> dict:
+    if skip_existing:
+        existing = existing_export_entry(input_path, output_root, source_root)
+        if existing is not None:
+            return existing
+
     blob = input_path.read_bytes()
     plan, reason = classify_ntxr(blob)
     output_base = output_root / input_path.relative_to(source_root)
@@ -964,6 +1016,17 @@ def main() -> int:
         default=Path("out") / "ac6_runtime_ntxr_exported",
         help="Output directory for exported textures",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-export textures even when a complete prior export already exists",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Export at most this many NTXR files (0 = no limit)",
+    )
     args = parser.parse_args()
 
     source_root = args.input.resolve()
@@ -972,8 +1035,11 @@ def main() -> int:
 
     exported = []
     skipped = []
-    for input_path in sorted(source_root.rglob("*.ntxr")):
-        result = export_ntxr(input_path, output_root, source_root)
+    ntxr_paths = sorted(source_root.rglob("*.ntxr"))
+    if args.limit > 0:
+        ntxr_paths = ntxr_paths[:args.limit]
+    for input_path in ntxr_paths:
+        result = export_ntxr(input_path, output_root, source_root, skip_existing=not args.force)
         if result["status"] == "exported":
             exported.append(result)
         else:

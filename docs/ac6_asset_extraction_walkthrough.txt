@@ -5,11 +5,12 @@ AC6 Asset Extraction Walkthrough
 Goal: go from a fresh clone of this repository to decoded AC6 asset files
 (textures, FHM containers, SWG metadata) on disk.
 
-The recompiled binary patches the guest decompressor at runtime via a midasm
-hook (see docs/ac6_extraction_roadmap.md). When the env var
-AC6_DUMP_PAC_DECODED=1 is set, every PAC entry the game touches is written
-to disk in already-decoded form. The asset pipeline then turns those raw
-buffers into typed FHM children, NTXR textures, etc.
+The PAC archives can be decoded fully offline. The extractor reads DATA.TBL,
+pulls each DATA00/01.PAC entry, applies the AC6 mode-1 descramble + raw DEFLATE
+path, and then turns the decoded buffers into typed FHM children, NTXR textures,
+audio banks, SWG metadata, etc. Runtime dumps are still useful for assets the
+game synthesizes or touches only through live workflows, but they are no longer
+required for normal PAC extraction.
 
 
 --------------------------------------------------------------------------------
@@ -62,7 +63,7 @@ has nothing to capture.
 
 
 --------------------------------------------------------------------------------
-3. Run the game with PAC dumping enabled
+3. Optional: run the game with PAC dumping enabled
 --------------------------------------------------------------------------------
 
 Use the helper launcher from PowerShell at the repo root:
@@ -83,7 +84,7 @@ Optional switches (only set these when you need them):
         Adds PPC back-chain stack=[...] traces on each PAC NtReadFile call.
         Useful for debugging the stream worker; not needed for routine runs.
 
-Play long enough for the streamer to load the assets you care about. As a
+This is optional. Play long enough for the streamer to load the assets you care about. As a
 rough guide:
 - Title screen + intro: enough for the boot/menu PACs.
 - One mission start: enough for that mission's PAC entries.
@@ -94,7 +95,7 @@ When you are done, close the game window normally.
 
 
 --------------------------------------------------------------------------------
-4. Verify the decoded dumps
+4. Optional: verify runtime decoded dumps
 --------------------------------------------------------------------------------
 
 The dumper writes to (relative to the repo root):
@@ -120,42 +121,52 @@ The first 4 bytes of any mode-1 dump should be 70,72,77,32 (ASCII "FHM ").
 5. Run the asset extraction pipeline
 --------------------------------------------------------------------------------
 
-From the repo root, with the dumps in place:
+From the repo root:
 
     python tools\run_ac6_asset_pipeline.py
 
 The driver runs four stages in order:
 
-    1. extract_ac6_pac.py
-       Pulls the raw 126 entries directly out of DATA00/01.PAC offline.
-       Outputs to out/ac6_pac_extracted_raw/.
+    1. extract_ac6_pac.py --decompress
+       Pulls all entries directly out of DATA00/01.PAC offline and decodes
+       mode-1 compressed entries. Outputs to out/ac6_pac_extracted_raw/.
 
     2. extract_ac6_runtime_fhm.py
-       Walks every entry_*_mode*.bin in out/ac6_pac_runtime_dump/ and
+       Walks every decoded PAC blob in out/ac6_pac_extracted_raw/files/ and
        descends into FHM containers, writing typed children to
        out/ac6_runtime_fhm_typed/.
 
-    3. parse_ac6_swg.py
+    3. extract_ac6_mdlp_parts.py
+       Splits embedded MDLP NDXR mesh chunks into named part folders and writes
+       manifests with face counts, bounds, UV/color/normal counts, material
+       texture hashes, primitive format histograms, primary-assembly grouping,
+       and LOD duplicate classification.
+
+    4. parse_ac6_swg.py
        Parses the UI sprite/widget metadata (.swg children) into
        out/ac6_runtime_swg_parsed/.
 
-    4. export_ac6_ntxr.py
+    5. export_ac6_ntxr.py
        Converts NTXR texture entries into DDS/TGA in
        out/ac6_runtime_ntxr_exported/.
 
-Override any output path with --raw-out, --typed-out, --swg-out, --ntxr-out.
-Add --skip-pac-extract if you only want to re-process the runtime dumps.
+Override any output path with --raw-out, --typed-out, --mdlp-out, --swg-out,
+--ntxr-out. Add --skip-pac-extract if you only want to re-process existing
+decoded PAC files. Add --include-runtime-dumps if you also want to merge entry_*
+dumps from a live capture session.
 
 
 --------------------------------------------------------------------------------
 6. Where the output lives
 --------------------------------------------------------------------------------
 
-    out/ac6_pac_runtime_dump/         Raw decoded buffers, one file per entry.
-    out/ac6_pac_extracted_raw/        126 raw (mode-0) entries pulled offline.
+    out/ac6_pac_runtime_dump/         Optional runtime decoded buffers.
+    out/ac6_pac_extracted_raw/        Offline raw/decompressed PAC entries.
     out/ac6_runtime_fhm_typed/        FHM children classified by magic
                                       (NTXR textures, BFX/BSN audio banks,
                                        MDLP/NSXR models, SWG UI, etc.).
+    out/ac6_mdlp_parts/               MDLP packages copied with unique names,
+                                      split NDXR mesh parts, and mesh manifests.
     out/ac6_runtime_swg_parsed/       JSON metadata for UI sprites.
     out/ac6_runtime_ntxr_exported/    DDS/TGA files (one per texture entry).
 
@@ -165,6 +176,9 @@ Add --skip-pac-extract if you only want to re-process the runtime dumps.
 --------------------------------------------------------------------------------
 
 * "no entry_*_mode1_*.bin files appeared"
+    Runtime dumps are optional for the offline pipeline. This only matters if
+    you explicitly ran with --include-runtime-dumps or are debugging live
+    streamer behavior.
     - The game did not stream any compressed entries during the session.
       Boot further or load a mission and try again.
     - AC6_DUMP_PAC_DECODED was not set. Always launch via the helper script,
@@ -190,8 +204,10 @@ Add --skip-pac-extract if you only want to re-process the runtime dumps.
       regardless of log level.
 
 * "extract_ac6_runtime_fhm.py reports 0 containers"
-    - The dump dir is empty or the files are still .compressed.bin.
-      Re-run with the hook fix above.
+    - Confirm extract_ac6_pac.py was run with --decompress and produced
+      out/ac6_pac_extracted_raw/files/DATA0x/compressed/*.decompressed.bin.
+    - If you are using --include-runtime-dumps, the dump dir may be empty or
+      still contain .compressed.bin files. Re-run with the hook fix above.
 
 * "log files rotate and the early dumper lines are gone"
     - At trace-level logging the rotating buffer fills in seconds. Do not
@@ -209,7 +225,7 @@ Add --skip-pac-extract if you only want to re-process the runtime dumps.
 8. Quick reference: env vars
 --------------------------------------------------------------------------------
 
-    AC6_DUMP_PAC_DECODED=1        Required. Enables the dumper sink.
+    AC6_DUMP_PAC_DECODED=1        Optional. Enables the runtime dumper sink.
     AC6_TRACE_PAC_WORK_ITEMS=1    Optional. Lifts [fs] log category to info,
                                   enables L1/L2 streamer-worker probes.
     AC6_TRACE_PAC_STACKS=1        Optional. PPC back-chain on PAC NtReadFile.

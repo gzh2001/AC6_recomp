@@ -27,13 +27,29 @@ REXCVAR_DECLARE(bool, ac6_texture_swaps_dump_enabled);
 REXCVAR_DECLARE(bool, vsync);
 REXCVAR_DECLARE(bool, guest_vblank_sync_to_refresh);
 REXCVAR_DECLARE(bool, host_present_from_non_ui_thread);
+#if REX_HAS_D3D12
 REXCVAR_DECLARE(bool, d3d12_allow_variable_refresh_rate_and_tearing);
+#endif
 REXCVAR_DECLARE(bool, vfetch_index_rounding_bias);
 REXCVAR_DECLARE(int32_t, video_mode_width);
 REXCVAR_DECLARE(int32_t, video_mode_height);
 REXCVAR_DECLARE(std::string, resolution);
 REXCVAR_DECLARE(int32_t, window_width);
 REXCVAR_DECLARE(int32_t, window_height);
+
+#if REX_HAS_VULKAN
+#define AC6_DEFAULT_GRAPHICS_BACKEND "vulkan"
+#elif REX_HAS_D3D12
+#define AC6_DEFAULT_GRAPHICS_BACKEND "d3d12"
+#else
+#define AC6_DEFAULT_GRAPHICS_BACKEND "auto"
+#endif
+
+REXCVAR_DEFINE_STRING(ac6_graphics_backend, AC6_DEFAULT_GRAPHICS_BACKEND,
+                      "AC6/NativeGraphics",
+                      "Host graphics backend: vulkan, d3d12, or auto")
+    .allowed({"vulkan", "d3d12", "auto"})
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 REXCVAR_DEFINE_BOOL(ac6_performance_mode, true, "AC6/Performance",
                     "Disable all diagnostics, logging, and development overlays for maximum runtime performance");
@@ -82,9 +98,11 @@ void ApplyAc6DefaultSettings() {
     if (!rex::cvar::HasNonDefaultValue("host_present_from_non_ui_thread")) {
         REXCVAR_SET(host_present_from_non_ui_thread, false);
     }
+#if REX_HAS_D3D12
     if (!rex::cvar::HasNonDefaultValue("d3d12_allow_variable_refresh_rate_and_tearing")) {
         REXCVAR_SET(d3d12_allow_variable_refresh_rate_and_tearing, false);
     }
+#endif
     if (!rex::cvar::HasNonDefaultValue("vfetch_index_rounding_bias")) {
         REXCVAR_SET(vfetch_index_rounding_bias, true);
     }

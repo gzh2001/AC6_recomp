@@ -106,7 +106,10 @@ def main() -> int:
     output_root = args.output.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
 
-    swg_files = [input_path] if input_path.is_file() else sorted(input_path.rglob("*_SWG_.bin"))
+    if input_path.is_file():
+        swg_files = [input_path]
+    else:
+        swg_files = sorted({*input_path.rglob("*_SWG_.bin"), *input_path.rglob("*.swg")})
     parsed = []
     for swg_path in swg_files:
         result = parse_one(swg_path)

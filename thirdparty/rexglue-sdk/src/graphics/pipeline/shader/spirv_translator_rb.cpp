@@ -1365,45 +1365,7 @@ void SpirvShaderTranslator::CompleteFragmentShaderInMain() {
     }
   }
 
-  if (!edram_fragment_shader_interlock_ && output_fragment_depth_ != spv::NoResult) {
-    Modification::DepthStencilMode depth_stencil_mode =
-        GetSpirvShaderModification().pixel.depth_stencil_mode;
-    if (depth_stencil_mode == Modification::DepthStencilMode::kFloat24Truncating ||
-        depth_stencil_mode == Modification::DepthStencilMode::kFloat24Rounding) {
-      // For oDepth, depth is already in guest [0, 1].
-      // Without oDepth, reconstruct guest [0, 1] from host [0, 0.5] by
-      // doubling gl_FragCoord.z and saturating.
-      spv::Id depth;
-      if (current_shader().writes_depth()) {
-        depth = builder_->createLoad(output_fragment_depth_, spv::NoPrecision);
-      } else {
-        assert_true(input_fragment_coordinates_ != spv::NoResult);
-        id_vector_temp_.clear();
-        id_vector_temp_.push_back(builder_->makeIntConstant(2));
-        depth = builder_->createLoad(
-            builder_->createAccessChain(spv::StorageClassInput, input_fragment_coordinates_,
-                                        id_vector_temp_),
-            spv::NoPrecision);
-        if (IsSampleRate()) {
-          // Statically use gl_SampleID to keep this path at sample frequency.
-          assert_true(input_sample_id_ != spv::NoResult);
-          builder_->createLoad(input_sample_id_, spv::NoPrecision);
-        }
-        depth = builder_->createTriBuiltinCall(
-            type_float_, ext_inst_glsl_std_450_, GLSLstd450NClamp,
-            builder_->createNoContractionBinOp(spv::OpFMul, type_float_, depth,
-                                               builder_->makeFloatConstant(2.0f)),
-            const_float_0_, const_float_1_);
-      }
-      // Convert guest [0, 1] float32 to float24 and back to host [0, 0.5].
-      spv::Id depth_float24 = SpirvShaderTranslator::PreClampedDepthTo20e4(
-          *builder_, depth, depth_stencil_mode == Modification::DepthStencilMode::kFloat24Rounding,
-          false, ext_inst_glsl_std_450_);
-      depth = SpirvShaderTranslator::Depth20e4To32(*builder_, depth_float24, 0, true, false,
-                                                   ext_inst_glsl_std_450_);
-      builder_->createStore(depth, output_fragment_depth_);
-    }
-  }
+  CompleteFragmentShader_DSV_DepthTo24Bit();
 
   if (edram_fragment_shader_interlock_) {
     if (block_fsi_if_after_depth_stencil_merge) {
@@ -1423,6 +1385,72 @@ void SpirvShaderTranslator::CompleteFragmentShaderInMain() {
 
     builder_->createNoResultOp(spv::OpEndInvocationInterlockEXT);
   }
+}
+
+void SpirvShaderTranslator::CompleteFragmentShader_DSV_DepthTo24Bit() {
+  if (edram_fragment_shader_interlock_ || output_fragment_depth_ == spv::NoResult) {
+    return;
+  }
+
+  Modification::DepthStencilMode depth_stencil_mode =
+      GetSpirvShaderModification().pixel.depth_stencil_mode;
+  bool convert_float24_depth =
+      depth_stencil_mode == Modification::DepthStencilMode::kFloat24Truncating ||
+      depth_stencil_mode == Modification::DepthStencilMode::kFloat24Rounding;
+  bool shader_writes_depth = current_shader().writes_depth();
+  if (!shader_writes_depth && !convert_float24_depth) {
+    return;
+  }
+
+  // For oDepth, depth is already in guest [0, 1]. Without oDepth, reconstruct
+  // guest [0, 1] from host [0, 0.5] by doubling gl_FragCoord.z and saturating.
+  spv::Id depth;
+  if (shader_writes_depth) {
+    assert_true(output_or_var_fragment_depth_ != spv::NoResult);
+    depth = builder_->createLoad(output_or_var_fragment_depth_, spv::NoPrecision);
+  } else {
+    assert_true(input_fragment_coordinates_ != spv::NoResult);
+    id_vector_temp_.clear();
+    id_vector_temp_.push_back(builder_->makeIntConstant(2));
+    depth = builder_->createLoad(
+        builder_->createAccessChain(spv::StorageClassInput, input_fragment_coordinates_,
+                                    id_vector_temp_),
+        spv::NoPrecision);
+    if (IsSampleRate()) {
+      // Statically use gl_SampleID to keep this path at sample frequency.
+      assert_true(input_sample_id_ != spv::NoResult);
+      builder_->createLoad(input_sample_id_, spv::NoPrecision);
+    }
+    depth = builder_->createTriBuiltinCall(
+        type_float_, ext_inst_glsl_std_450_, GLSLstd450NClamp,
+        builder_->createNoContractionBinOp(spv::OpFMul, type_float_, depth,
+                                           builder_->makeFloatConstant(2.0f)),
+        const_float_0_, const_float_1_);
+  }
+
+  if (convert_float24_depth) {
+    // Convert guest [0, 1] float32 to float24 and back to host [0, 0.5].
+    spv::Id depth_float24 = SpirvShaderTranslator::PreClampedDepthTo20e4(
+        *builder_, depth, depth_stencil_mode == Modification::DepthStencilMode::kFloat24Rounding,
+        false, ext_inst_glsl_std_450_);
+    depth = SpirvShaderTranslator::Depth20e4To32(*builder_, depth_float24, 0, true, false,
+                                                 ext_inst_glsl_std_450_);
+  } else if (shader_writes_depth) {
+    // oDepth bypasses viewport depth scaling, so dynamically remap guest
+    // 0...1 to host 0...0.5 whenever the bound depth buffer is D24FS8.
+    spv::Id depth_float24_flag = builder_->createBinOp(
+        spv::OpINotEqual, type_bool_,
+        builder_->createBinOp(spv::OpBitwiseAnd, type_uint_, main_system_constant_flags_,
+                              builder_->makeUintConstant(kSysFlag_DepthFloat24)),
+        const_uint_0_);
+    depth = builder_->createTriOp(
+        spv::OpSelect, type_float_, depth_float24_flag,
+        builder_->createNoContractionBinOp(spv::OpFMul, type_float_, depth,
+                                           builder_->makeFloatConstant(0.5f)),
+        depth);
+  }
+
+  builder_->createStore(depth, output_fragment_depth_);
 }
 
 spv::Id SpirvShaderTranslator::LoadMsaaSamplesFromFlags() {

@@ -12,6 +12,7 @@
                 "CMAKE_CXX_COMPILER": "clang++",
                 "CMAKE_C_FLAGS": "-march=x86-64-v3 -w",
                 "CMAKE_CXX_FLAGS": "-march=x86-64-v3 -w",
+                "PYTHON_EXECUTABLE": "python",
                 "REXSDK_DIR": "${sourceDir}/thirdparty/rexglue-sdk"
             },
             "condition": {
@@ -69,6 +70,26 @@
             "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
         },
         {
+            "name": "win-amd64-vulkan-relwithdebinfo",
+            "displayName": "Windows AMD64 Vulkan RelWithDebInfo",
+            "inherits": "windows-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "REXGLUE_USE_D3D12": "ON",
+                "REXGLUE_USE_VULKAN": "ON"
+            }
+        },
+        {
+            "name": "win-amd64-vulkan-only-relwithdebinfo",
+            "displayName": "Windows AMD64 Vulkan-Only RelWithDebInfo",
+            "inherits": "windows-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "REXGLUE_USE_D3D12": "OFF",
+                "REXGLUE_USE_VULKAN": "ON"
+            }
+        },
+        {
             "name": "linux-amd64-relwithdebinfo",
             "displayName": "Linux AMD64 RelWithDebInfo",
             "inherits": "linux-base",
@@ -79,6 +100,8 @@
         { "name": "win-amd64-debug", "configurePreset": "win-amd64-debug" },
         { "name": "win-amd64-release", "configurePreset": "win-amd64-release" },
         { "name": "win-amd64-relwithdebinfo", "configurePreset": "win-amd64-relwithdebinfo" },
+        { "name": "win-amd64-vulkan-relwithdebinfo", "configurePreset": "win-amd64-vulkan-relwithdebinfo" },
+        { "name": "win-amd64-vulkan-only-relwithdebinfo", "configurePreset": "win-amd64-vulkan-only-relwithdebinfo" },
         { "name": "linux-amd64-debug", "configurePreset": "linux-amd64-debug" },
         { "name": "linux-amd64-release", "configurePreset": "linux-amd64-release" },
         { "name": "linux-amd64-relwithdebinfo", "configurePreset": "linux-amd64-relwithdebinfo" }

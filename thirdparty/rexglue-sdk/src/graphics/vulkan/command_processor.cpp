@@ -46,6 +46,8 @@
 #include <rex/ui/vulkan/presenter.h>
 #include <rex/ui/vulkan/util.h>
 
+#include "../../../../../src/ac6_backend_fixes/ac6_backend_hooks.h"
+
 // Legacy backend compatibility aliases for shared readback controls.
 REXCVAR_DEFINE_BOOL(vulkan_readback_resolve, false, "GPU/Vulkan",
                     "Read render-to-texture results on the CPU")
@@ -613,14 +615,10 @@ void VulkanCommandProcessor::InvalidateGpuMemory() {
 void VulkanCommandProcessor::InvalidateAllVertexBufferResidency() {
   vertex_buffers_in_sync_[0] = 0;
   vertex_buffers_in_sync_[1] = 0;
-  for (VertexBufferState& state : vertex_buffer_states_) {
-    state.address = UINT32_MAX;
-    state.size = UINT32_MAX;
-  }
 }
 
 void VulkanCommandProcessor::InvalidateVertexBufferResidency(uint32_t vfetch_index) {
-  if (vfetch_index >= vertex_buffer_states_.size()) {
+  if (vfetch_index >= kVertexFetchConstantCount) {
     return;
   }
   vertex_buffers_in_sync_[vfetch_index >> 6] &= ~(uint64_t(1) << (vfetch_index & 63));
@@ -631,10 +629,10 @@ void VulkanCommandProcessor::InvalidateVertexBufferResidencyRange(uint32_t first
   if (first_vfetch > last_vfetch) {
     std::swap(first_vfetch, last_vfetch);
   }
-  if (first_vfetch >= vertex_buffer_states_.size()) {
+  if (first_vfetch >= kVertexFetchConstantCount) {
     return;
   }
-  last_vfetch = std::min(last_vfetch, uint32_t(vertex_buffer_states_.size() - 1));
+  last_vfetch = std::min(last_vfetch, kVertexFetchConstantCount - 1);
   for (uint32_t vfetch_index = first_vfetch; vfetch_index <= last_vfetch; ++vfetch_index) {
     InvalidateVertexBufferResidency(vfetch_index);
   }
@@ -2300,6 +2298,16 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
     return;
   }
 
+  // Keep the AC6 frame-boundary diagnostics in sync with the D3D12 path before
+  // the swap source is selected and presented.
+  {
+    system::GraphicsSwapSubmission frame_boundary_submission = {};
+    frame_boundary_submission.frontbuffer_virtual_address = frontbuffer_ptr;
+    frame_boundary_submission.frontbuffer_width = frontbuffer_width;
+    frame_boundary_submission.frontbuffer_height = frontbuffer_height;
+    graphics_system_->HandleVideoSwap(frame_boundary_submission);
+  }
+
   bool skip_present_due_async_placeholder = REXCVAR_GET(async_shader_compilation) &&
                                             REXCVAR_GET(vulkan_async_skip_incomplete_frames) &&
                                             frame_used_async_placeholder_pipeline_;
@@ -2413,6 +2421,29 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
       frontbuffer_width_scaled, frontbuffer_height_scaled, frontbuffer_width_unscaled,
       frontbuffer_height_unscaled, guest_output_width, guest_output_height,
       static_cast<uint32_t>(frontbuffer_format));
+
+  system::GraphicsSwapSubmission ac6_submission = {};
+  uint64_t ac6_submission_sequence = 0;
+  graphics_system_->GetLastSwapSubmission(&ac6_submission, &ac6_submission_sequence);
+  if (!ac6_submission_sequence) {
+    ac6_submission.frontbuffer_virtual_address = frontbuffer_ptr;
+    ac6_submission.frontbuffer_width = frontbuffer_width;
+    ac6_submission.frontbuffer_height = frontbuffer_height;
+  }
+
+  auto* ac6_vertex_shader = active_vertex_shader();
+  auto* ac6_pixel_shader = active_pixel_shader();
+  uint64_t ac6_vertex_shader_hash =
+      ac6_vertex_shader ? ac6_vertex_shader->ucode_data_hash() : 0;
+  uint64_t ac6_pixel_shader_hash =
+      ac6_pixel_shader ? ac6_pixel_shader->ucode_data_hash() : 0;
+
+  ac6::backend::ReportSwapDecision(
+      ac6_submission, ac6_submission_sequence,
+      ac6::backend::SwapSourceType::kGuestSwapTexture,
+      swap_source_scaled, guest_output_width, guest_output_height,
+      frontbuffer_width_scaled, frontbuffer_height_scaled,
+      ac6_vertex_shader_hash, ac6_pixel_shader_hash);
 
   system::X_VIDEO_MODE video_mode;
   kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
@@ -4020,11 +4051,6 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
                       vfetch_index, vfetch_constant.dword_0, vfetch_constant.dword_1);
           return false;
       }
-      VertexBufferState& state = vertex_buffer_states_[vfetch_index];
-      if (state.address == vfetch_constant.address && state.size == vfetch_constant.size) {
-        vertex_buffers_in_sync_[vfetch_index >> 6] |= vfetch_bit;
-        continue;
-      }
       if (!shared_memory_->RequestRange(vfetch_constant.address << 2, vfetch_constant.size << 2)) {
         REXGPU_ERROR(
             "Failed to request vertex buffer at 0x{:08X} (size {}) in the shared "
@@ -4032,8 +4058,6 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
             vfetch_constant.address << 2, vfetch_constant.size << 2);
         return false;
       }
-      state.address = vfetch_constant.address;
-      state.size = vfetch_constant.size;
       vertex_buffers_in_sync_[vfetch_index >> 6] |= vfetch_bit;
     }
   }

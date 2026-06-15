@@ -13,6 +13,7 @@ DEFAULT_ASSET_ROOT = Path("out") / "build" / "win-amd64-relwithdebinfo" / "asset
 DEFAULT_RAW_OUT = Path("out") / "ac6_pac_extracted_raw"
 DEFAULT_DUMP_DIR = Path("out") / "ac6_pac_runtime_dump"
 DEFAULT_TYPED_OUT = Path("out") / "ac6_runtime_fhm_typed"
+DEFAULT_MDLP_OUT = Path("out") / "ac6_mdlp_parts"
 DEFAULT_SWG_OUT = Path("out") / "ac6_runtime_swg_parsed"
 DEFAULT_NTXR_OUT = Path("out") / "ac6_runtime_ntxr_exported"
 
@@ -33,13 +34,13 @@ def count_fhm_containers(manifest: dict | None) -> int | None:
         return None
     containers = manifest.get("containers")
     if isinstance(containers, list):
-        return len(containers)
+        return sum(1 for item in containers if item.get("kind") == "fhm")
     return None
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run the AC6 asset extraction pipeline over PAC archives and collected runtime decode dumps."
+        description="Run the AC6 asset extraction pipeline over offline-decoded PAC archives."
     )
     parser.add_argument(
         "--asset-root",
@@ -57,7 +58,7 @@ def main() -> int:
         "--dump-dir",
         type=Path,
         default=DEFAULT_DUMP_DIR,
-        help="Directory containing runtime PAC decode dumps",
+        help="Directory containing optional runtime PAC decode dumps",
     )
     parser.add_argument(
         "--typed-out",
@@ -72,6 +73,12 @@ def main() -> int:
         help="Output directory for parse_ac6_swg.py",
     )
     parser.add_argument(
+        "--mdlp-out",
+        type=Path,
+        default=DEFAULT_MDLP_OUT,
+        help="Output directory for extract_ac6_mdlp_parts.py",
+    )
+    parser.add_argument(
         "--ntxr-out",
         type=Path,
         default=DEFAULT_NTXR_OUT,
@@ -81,6 +88,16 @@ def main() -> int:
         "--raw-only",
         action="store_true",
         help="Pass --raw-only to extract_ac6_pac.py",
+    )
+    parser.add_argument(
+        "--no-decompress",
+        action="store_true",
+        help="Do not pass --decompress to extract_ac6_pac.py",
+    )
+    parser.add_argument(
+        "--include-runtime-dumps",
+        action="store_true",
+        help="Also process entry_* runtime dumps from --dump-dir when present",
     )
     parser.add_argument(
         "--skip-pac-extract",
@@ -94,6 +111,7 @@ def main() -> int:
     raw_out = args.raw_out.resolve()
     dump_dir = args.dump_dir.resolve()
     typed_out = args.typed_out.resolve()
+    mdlp_out = args.mdlp_out.resolve()
     swg_out = args.swg_out.resolve()
     ntxr_out = args.ntxr_out.resolve()
 
@@ -104,23 +122,35 @@ def main() -> int:
             pac_args = [str(THIS_DIR / "extract_ac6_pac.py"), str(asset_root), "--output", str(raw_out)]
             if args.raw_only:
                 pac_args.append("--raw-only")
+            elif not args.no_decompress:
+                pac_args.append("--decompress")
             run_step(pac_args, repo_root)
         elif not raw_manifest.exists():
             raise SystemExit(f"asset root does not exist and no prior raw manifest is available: {asset_root}")
 
-    if not dump_dir.exists():
-        raise SystemExit(f"runtime dump directory does not exist: {dump_dir}")
-
     fhm_args = [
         str(THIS_DIR / "extract_ac6_runtime_fhm.py"),
-        "--dump-dir",
-        str(dump_dir),
+        "--manifest",
+        str(raw_manifest),
+        "--pac-files",
+        str(raw_out / "files"),
         "--output",
         str(typed_out),
     ]
-    if raw_manifest.exists():
-        fhm_args.extend(["--manifest", str(raw_manifest)])
+    if args.include_runtime_dumps:
+        fhm_args.extend(["--include-runtime-dumps", "--dump-dir", str(dump_dir)])
     run_step(fhm_args, repo_root)
+
+    run_step(
+        [
+            str(THIS_DIR / "extract_ac6_mdlp_parts.py"),
+            "--input",
+            str(typed_out),
+            "--output",
+            str(mdlp_out),
+        ],
+        repo_root,
+    )
 
     run_step(
         [
@@ -147,14 +177,16 @@ def main() -> int:
     summary = {
         "asset_root": str(asset_root),
         "raw_manifest": str(raw_manifest) if raw_manifest.exists() else None,
-        "dump_dir": str(dump_dir),
+        "dump_dir": str(dump_dir) if args.include_runtime_dumps else None,
         "typed_manifest": str(typed_out / "manifest.json"),
+        "mdlp_manifest": str(mdlp_out / "manifest.json"),
         "swg_manifest": str(swg_out / "manifest.json"),
         "ntxr_manifest": str(ntxr_out / "manifest.json"),
     }
 
     raw_data = read_json(raw_manifest)
     typed_data = read_json(typed_out / "manifest.json")
+    mdlp_data = read_json(mdlp_out / "manifest.json")
     swg_data = read_json(swg_out / "manifest.json")
     ntxr_data = read_json(ntxr_out / "manifest.json")
 
@@ -162,9 +194,12 @@ def main() -> int:
         summary["pac_entries"] = raw_data.get("entry_count")
         summary["pac_extracted"] = raw_data.get("extracted_count")
         summary["pac_skipped"] = raw_data.get("skipped_count")
+        summary["pac_decompressed"] = raw_data.get("decompressed_count")
     fhm_containers = count_fhm_containers(typed_data)
     if fhm_containers is not None:
         summary["fhm_containers"] = fhm_containers
+    if mdlp_data:
+        summary["mdlp_packages"] = mdlp_data.get("package_count")
     if swg_data:
         summary["swg_files"] = swg_data.get("parsed_count")
     if ntxr_data:

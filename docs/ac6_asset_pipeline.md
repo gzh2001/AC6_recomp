@@ -5,7 +5,7 @@ This pipeline extracts and converts the AC6 assets we currently understand.
 It automates these stages:
 
 1. `DATA.TBL` + `DATA00.PAC` / `DATA01.PAC` index extraction
-2. Runtime PAC decode dump parsing
+2. Offline mode-1 PAC decompression
 3. Recursive `FHM` extraction
 4. `SWG` UI metadata parsing
 5. `NTXR` texture export
@@ -45,7 +45,7 @@ extraction; it remains useful only for assets synthesized at runtime.
 
 - The game assets exist at:
   - `C:\ext\New folder\AC6_recomp\out\build\win-amd64-relwithdebinfo\assets`
-- If you want runtime-decoded content included, you must already have:
+- Optional: if you want runtime-synthesized content included, you must already have:
   - `C:\ext\New folder\AC6_recomp\out\ac6_pac_runtime_dump`
 
 To collect runtime dumps in future runs:
@@ -74,8 +74,7 @@ python .\tools\run_ac6_asset_pipeline.py
 This uses the default paths:
 
 - Asset root: `out\build\win-amd64-relwithdebinfo\assets`
-- Raw PAC output: `out\ac6_pac_extracted_raw`
-- Runtime dump input: `out\ac6_pac_runtime_dump`
+- Raw/decompressed PAC output: `out\ac6_pac_extracted_raw`
 - Typed FHM output: `out\ac6_runtime_fhm_typed`
 - SWG output: `out\ac6_runtime_swg_parsed`
 - Texture output: `out\ac6_runtime_ntxr_exported`
@@ -83,7 +82,7 @@ This uses the default paths:
 The wrapper prints a final JSON summary with the current corpus totals, including:
 
 - PAC entries extracted
-- runtime `FHM` container count
+- offline `FHM` container count
 - parsed `SWG` files
 - exported/skipped `NTXR` textures
 
@@ -95,17 +94,16 @@ Use a custom asset root:
 python .\tools\run_ac6_asset_pipeline.py --asset-root 'C:\path\to\assets'
 ```
 
-Skip PAC re-extraction and only process existing dumps:
+Skip PAC re-extraction and process the existing offline decoded files:
 
 ```powershell
 python .\tools\run_ac6_asset_pipeline.py --skip-pac-extract
 ```
 
-Recommended workflow after a new play session:
+Include optional runtime dumps in addition to the offline decoded PAC corpus:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\launch_ac6_with_pac_dump.ps1
-python .\tools\run_ac6_asset_pipeline.py --skip-pac-extract
+python .\tools\run_ac6_asset_pipeline.py --include-runtime-dumps
 ```
 
 Extract only PAC entries marked raw:
@@ -118,7 +116,7 @@ python .\tools\run_ac6_asset_pipeline.py --raw-only
 
 - Raw PAC extraction:
   - `C:\ext\New folder\AC6_recomp\out\ac6_pac_extracted_raw`
-- Parsed runtime FHM corpus:
+- Parsed FHM corpus:
   - `C:\ext\New folder\AC6_recomp\out\ac6_runtime_fhm_typed`
 - Parsed SWG metadata:
   - `C:\ext\New folder\AC6_recomp\out\ac6_runtime_swg_parsed`

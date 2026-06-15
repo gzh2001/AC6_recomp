@@ -38,8 +38,11 @@ void NativeGraphicsStatusDialog::OnDraw(ImGuiIO& io) {
   ImGui::Text("mode: %.*s", static_cast<int>(ToString(status.mode).size()),
               ToString(status.mode).data());
   ImGui::Text("authoritative renderer: %s",
-              status.authoritative_renderer_active ? "RexGlue/Xenia D3D12 backend"
-                                                   : "disabled");
+              status.authoritative_renderer_active
+                  ? (status.authoritative_renderer_name.empty()
+                         ? "RexGlue/Xenia backend"
+                         : status.authoritative_renderer_name.c_str())
+                  : "disabled");
   ImGui::Text("capture active: %s", status.capture_enabled ? "yes" : "no");
   ImGui::Text("draw resolution scale: %ux%u", status.draw_resolution_scale_x,
               status.draw_resolution_scale_y);

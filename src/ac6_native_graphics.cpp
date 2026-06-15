@@ -25,6 +25,7 @@ REXCVAR_DEFINE_BOOL(ac6_force_safe_draw_resolution_scale, true, "AC6/NativeGraph
                     "Force AC6 hybrid backend fixes mode to use 1x draw resolution scaling until the scaled path is fixed");
 REXCVAR_DEFINE_BOOL(ac6_force_safe_direct_host_resolve, true, "AC6/NativeGraphics",
                     "Force AC6 hybrid backend fixes mode to keep direct_host_resolve disabled until the AC6 crash is fixed");
+REXCVAR_DECLARE(std::string, ac6_graphics_backend);
 
 namespace ac6::graphics {
 namespace {
@@ -69,6 +70,9 @@ void SyncRuntimeFlags() {
   g_runtime_status.authoritative_renderer_active =
       g_runtime_status.enabled &&
       g_runtime_status.mode != GraphicsRuntimeMode::kDisabled;
+  if (g_runtime_status.authoritative_renderer_name.empty()) {
+    g_runtime_status.authoritative_renderer_name = REXCVAR_GET(ac6_graphics_backend);
+  }
 }
 
 }  // namespace
@@ -140,6 +144,7 @@ void OnFrameBoundary(rex::memory::Memory* memory) {
     auto* kernel_state = ts->context()->kernel_state;
     if (auto* concrete_graphics =
             dynamic_cast<rex::graphics::GraphicsSystem*>(kernel_state->graphics_system())) {
+      g_runtime_status.authoritative_renderer_name = concrete_graphics->name();
       concrete_graphics->GetLastSwapSubmission(&swap_submission, &swap_sequence);
       guest_vblank_interval_ticks = concrete_graphics->guest_vblank_interval_ticks();
       last_guest_vblank_tick = concrete_graphics->last_vblank_interrupt_guest_tick();
