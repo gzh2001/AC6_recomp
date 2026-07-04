@@ -2,6 +2,48 @@
 setlocal enabledelayedexpansion
 
 echo =========================================
+echo Visual Studio Environment Initialization
+echo =========================================
+
+:: Check if already in a VS developer prompt
+if not "%VCINSTALLDIR%"=="" (
+    echo [OK] Already running in Visual Studio developer environment.
+    goto :env_ready
+)
+
+:: Locate vswhere.exe
+set "VSWHERE_PATH=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if not exist "!VSWHERE_PATH!" (
+    set "VSWHERE_PATH=%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe"
+)
+
+if exist "!VSWHERE_PATH!" (
+    echo Locating Visual Studio installation...
+    for /f "usebackq tokens=*" %%i in (`"!VSWHERE_PATH!" -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+        set "VS_INSTALL_DIR=%%i"
+    )
+    
+    if not "!VS_INSTALL_DIR!"=="" (
+        set "VCVARS_BAT=!VS_INSTALL_DIR!\VC\Auxiliary\Build\vcvars64.bat"
+        if exist "!VCVARS_BAT!" (
+            echo [OK] Found Visual Studio variables script: !VCVARS_BAT!
+            echo Initializing x64 Developer Environment...
+            
+            :: Call vcvars64.bat inside a temporary environment block, then preserve env
+            :: We do this by calling it and dumping the env changes
+            call "!VCVARS_BAT!" >nul
+            goto :env_ready
+        )
+    )
+)
+
+echo [WARNING] Could not automatically initialize Visual Studio developer environment.
+echo If compilation fails, please run this script from the "x64 Native Tools Command Prompt for VS".
+echo.
+
+:env_ready
+
+echo =========================================
 echo Prerequisites Check
 echo =========================================
 
@@ -28,14 +70,13 @@ if %errorlevel% neq 0 (
 clang --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo [ERROR] Clang not found on PATH.
-    echo Please download LLVM/Clang from https://github.com/llvm/llvm-project/releases or via Visual Studio Installer ^(C++ Clang tools^) and add to PATH.
+    echo Please install LLVM/Clang or select the "C++ Clang tools for Windows" component in the Visual Studio Installer.
     pause
     exit /b 1
 )
 clang++ --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo [ERROR] Clang++ not found on PATH.
-    echo Please ensure clang++ is available.
     pause
     exit /b 1
 )
@@ -49,7 +90,7 @@ if !errorlevel! equ 0 set sdk_found=1
 
 if !sdk_found! equ 0 (
     echo [ERROR] Windows SDK 10.0.19041+ not found in registry.
-    echo Please install it via the Visual Studio Installer by selecting the "Windows 10 SDK (10.0.19041.0)" or newer under the "Desktop development with C++" workload.
+    echo Please install it via the Visual Studio Installer.
     pause
     exit /b 1
 )
@@ -57,41 +98,22 @@ echo [OK] All prerequisites found!
 echo.
 
 echo =========================================
-echo Environment Check
+echo Environment Validation
 echo =========================================
 if /I "%VSCMD_ARG_TGT_ARCH%"=="x86" (
     echo [ERROR] Detected an x86 Visual Studio developer environment.
     echo This project must be configured from an x64 environment.
-    echo Close this shell and reopen a normal 64-bit PowerShell/CMD window, or use an x64 Native Tools prompt.
+    echo Please run this script in an x64 Native Tools prompt.
     pause
     exit /b 1
 )
 if /I "%Platform%"=="x86" (
     echo [ERROR] Detected Platform=x86 in the current shell.
     echo This project must be configured for a 64-bit target.
-    echo Close this shell and reopen a normal 64-bit PowerShell/CMD window, or use an x64 Native Tools prompt.
     pause
     exit /b 1
 )
-echo [OK] No x86-only VS environment detected.
-echo.
-
-echo =========================================
-echo Git Branch Check
-echo =========================================
-for /f "delims=" %%i in ('git rev-parse --abbrev-ref HEAD') do set CURRENT_BRANCH=%%i
-echo Current branch: !CURRENT_BRANCH!
-if /I "!CURRENT_BRANCH!"=="main" (
-    echo Switching from main to dev-test branch...
-    git checkout dev-test
-    if !errorlevel! neq 0 (
-        echo [ERROR] Failed to checkout dev-test branch.
-        pause
-        exit /b 1
-    )
-) else (
-    echo Already on !CURRENT_BRANCH! branch or not on main.
-)
+echo [OK] Target environment is 64-bit.
 echo.
 
 echo =========================================
@@ -117,28 +139,44 @@ if not exist "!EXTRACT_XISO_EXE!" (
     powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://github.com/XboxDev/extract-xiso/releases/download/build-202505152050/extract-xiso-Win32_Release.zip' -OutFile 'extract-xiso.zip'; Expand-Archive -Path 'extract-xiso.zip' -DestinationPath 'extract-xiso-temp' -Force; Move-Item -Path 'extract-xiso-temp\artifacts\extract-xiso.exe' -Destination '.' -Force; Remove-Item 'extract-xiso.zip'; Remove-Item 'extract-xiso-temp' -Recurse -Force"
     if not exist "!EXTRACT_XISO_EXE!" (
         echo [ERROR] Failed to download or extract extract-xiso.
-        echo Please download it manually from https://github.com/XboxDev/extract-xiso/releases and place extract-xiso.exe in this folder.
         pause
         exit /b 1
     )
 )
 
 set EXTRACT_DIR=assets
-echo Extracting '!ISO_FILE!' to '!EXTRACT_DIR!' directory...
-if not exist "!EXTRACT_DIR!" mkdir "!EXTRACT_DIR!"
-!EXTRACT_XISO_EXE! -d "!EXTRACT_DIR!" "!ISO_FILE!"
-if !errorlevel! neq 0 (
-    echo [ERROR] Failed to extract ISO.
-    pause
-    exit /b 1
+if exist "!EXTRACT_DIR!\default.xex" (
+    echo [OK] '!EXTRACT_DIR!\default.xex' already exists. Skipping extraction.
+) else (
+    echo Extracting '!ISO_FILE!' to '!EXTRACT_DIR!' directory...
+    if not exist "!EXTRACT_DIR!" mkdir "!EXTRACT_DIR!"
+    !EXTRACT_XISO_EXE! -d "!EXTRACT_DIR!" "!ISO_FILE!"
+    if !errorlevel! neq 0 (
+        echo [ERROR] Failed to extract ISO.
+        pause
+        exit /b 1
+    )
+    echo [OK] Extraction complete!
 )
-echo [OK] Extraction complete!
 echo.
 
 echo =========================================
-echo Building the Game
+echo Building the Game (MSVC Backend)
 echo =========================================
-echo Step 1: Configuring...
+:: Check for clean build argument
+set "clean_build=0"
+if "%~1"=="--clean" set "clean_build=1"
+if "%~1"=="-clean" set "clean_build=1"
+if "%~1"=="clean" set "clean_build=1"
+
+if "!clean_build!"=="1" (
+    echo Cleaning previous build directory out...
+    if exist "out" rd /s /q "out"
+) else (
+    echo Incremental build enabled. Use --clean argument for a clean build.
+)
+
+echo Step 1: Configuring CMake...
 cmake --preset win-amd64-relwithdebinfo
 if !errorlevel! neq 0 (
     echo [ERROR] Configuration failed.
@@ -154,7 +192,7 @@ if !errorlevel! neq 0 (
     exit /b 1
 )
 
-echo Step 3: Re-configuring...
+echo Step 3: Re-configuring CMake...
 cmake --preset win-amd64-relwithdebinfo
 if !errorlevel! neq 0 (
     echo [ERROR] Re-configuration failed.
@@ -163,9 +201,12 @@ if !errorlevel! neq 0 (
 )
 
 echo Step 4: Building the runtime...
-cmake --build --preset win-amd64-relwithdebinfo
+cmake --build --preset win-amd64-relwithdebinfo > build.log 2>&1
 if !errorlevel! neq 0 (
-    echo [ERROR] Build failed.
+    echo [ERROR] Build failed. Showing the last 50 lines of build.log:
+    echo --------------------------------------------------
+    powershell -Command "Get-Content build.log -Tail 50"
+    echo --------------------------------------------------
     pause
     exit /b 1
 )
