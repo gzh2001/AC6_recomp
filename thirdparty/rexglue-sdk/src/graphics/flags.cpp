@@ -33,6 +33,38 @@ REXCVAR_DEFINE_BOOL(vfetch_index_rounding_bias, false, "GPU/Shader",
                     "flooring to fix black triangles caused by RCP precision");
 REXCVAR_DEFINE_BOOL(draw_resolution_scaled_texture_offsets, true, "GPU/Shader",
                     "Scale texture offsets with draw resolution");
+REXCVAR_DEFINE_BOOL(param_gen_integer_guest_position, false, "GPU/Shader",
+                    "At >1x draw resolution scale, floor the PsParamGen pixel "
+                    "position to the integer guest-pixel index instead of keeping "
+                    "the sub-guest-pixel fraction. Fixes the mosaic in games that "
+                    "feed the position into their own integer pixel-address math "
+                    "(e.g. AC6's deferred EDRAM restore/de-swizzle passes), whose "
+                    "frac()-based bit extraction otherwise sees a doubled period and "
+                    "scrambles the sample coordinate. Those passes then sample at "
+                    "guest resolution. Off by default; harmless for shaders that pass "
+                    "the position straight to tfetch only at 1x.");
+REXCVAR_DEFINE_BOOL(param_gen_host_subpixel_restore, false, "GPU/Shader",
+                    "Builds on param_gen_integer_guest_position (and implies it): for "
+                    "resolution-scaled, position-derived 2D samples in pixel shaders "
+                    "that use PsParamGen, re-adds the host sub-pixel offset to the "
+                    "sample coordinate so the de-swizzle restore passes sample at full "
+                    "host resolution instead of the guest-texel center. Turns the "
+                    "mosaic fix from clean-but-soft into true resolution-scaled detail. "
+                    "Off by default; may need per-shader scoping if it disturbs other "
+                    "passes that read scaled render targets via interpolated coords.");
+REXCVAR_DEFINE_STRING(ac6_neutralize_deswizzle_hashes, "", "GPU/Shader",
+                    "AC6: comma/space-separated tokens \"<hash>[:<slot>[+<slot>...]]\" "
+                    "naming guest pixel-shader ucode hashes (hex) whose param_gen 2D "
+                    "texture samples manually de-swizzle the raw EDRAM sub-tile order of "
+                    "their source. The emulator's texture cache detiles everything to "
+                    "linear, so that de-swizzle is always a wrong texel permutation here "
+                    "(the mosaic/streak class). For a matching fetch the sample "
+                    "coordinate is replaced unconditionally with the identity host-texel "
+                    "UV (SV_Position.xy / (guest_size * scale)) -- a 1:1 copy. A bare "
+                    "hash overrides ALL of that shader's fetches; \":4\" limits it to "
+                    "Xenos tfetch slot 4 (needed when only some fetches de-swizzle, e.g. "
+                    "the AC6 cloud compositor: scene fetch de-swizzles, mask/cloud "
+                    "fetches use plain UVs and must be left alone). Runtime, no rebuild.");
 REXCVAR_DEFINE_BOOL(gpu_debug_markers, false, "GPU",
                     "Insert debug markers into GPU command streams for tools "
                     "like PIX and RenderDoc. Automatically enabled when "
