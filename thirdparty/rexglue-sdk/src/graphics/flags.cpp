@@ -37,6 +37,10 @@ REXCVAR_DEFINE_BOOL(gpu_debug_markers, false, "GPU",
                     "Insert debug markers into GPU command streams for tools "
                     "like PIX and RenderDoc. Automatically enabled when "
                     "RenderDoc is detected.");
+REXCVAR_DEFINE_BOOL(ac6_fix_trails, true, "AC6",
+                    "Fix invisible missile/jet trails: drop stale cached vertex-buffer "
+                    "residency so the GPU copy of AC6's fixed-address trail history ring "
+                    "refreshes when the CPU writes it. On by default.");
 
 bool IsGpuDebugMarkersEnabled() {
   static bool cached = false;
