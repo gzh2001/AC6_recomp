@@ -65,6 +65,12 @@ REXCVAR_DEFINE_STRING(ac6_neutralize_deswizzle_hashes, "", "GPU/Shader",
                     "Xenos tfetch slot 4 (needed when only some fetches de-swizzle, e.g. "
                     "the AC6 cloud compositor: scene fetch de-swizzles, mask/cloud "
                     "fetches use plain UVs and must be left alone). Runtime, no rebuild.");
+REXCVAR_DEFINE_BOOL(ac6_flare_drop_quad2, true, "GPU/Shader",
+                    "AC6: cull the sun lens-flare's spurious second billboard "
+                    "(vertices 4-7) to remove the faint rectangle in the sky");
+REXCVAR_DEFINE_INT32(ac6_flare_drop_index_min, 4, "GPU/Shader",
+                     "AC6: first vertex index of the flare draw to cull (the "
+                     "spurious billboard is vertices 4-7 of 8)");
 REXCVAR_DEFINE_BOOL(gpu_debug_markers, false, "GPU",
                     "Insert debug markers into GPU command streams for tools "
                     "like PIX and RenderDoc. Automatically enabled when "

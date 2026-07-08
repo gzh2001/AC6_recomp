@@ -39,6 +39,10 @@ REXCVAR_DECLARE(bool, readback_memexport_fast);
 REXCVAR_DECLARE(bool, occlusion_query_enable);
 REXCVAR_DECLARE(int32_t, query_occlusion_fake_sample_count);
 
+// AC6 sun-flare "square" fix (drop the flare's spurious second billboard)
+REXCVAR_DECLARE(bool, ac6_flare_drop_quad2);
+REXCVAR_DECLARE(int32_t, ac6_flare_drop_index_min);
+
 // GPU Depth / Render Target Behavior
 REXCVAR_DECLARE(bool, depth_float24_round);
 REXCVAR_DECLARE(bool, depth_float24_convert_in_pixel_shader);

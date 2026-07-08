@@ -18,6 +18,7 @@
 
 #include <rex/assert.h>
 #include <rex/cvar.h>
+#include <rex/graphics/flags.h>
 #include <rex/logging.h>
 #include <rex/graphics/pipeline/shader/dxbc.h>
 #include <rex/graphics/pipeline/shader/dxbc_translator.h>
@@ -1029,6 +1030,35 @@ void DxbcShaderTranslator::CompleteVertexOrDomainShader() {
                 dxbc::Src::LF(std::nanf("")),
                 dxbc::Src::R(system_temp_position_, dxbc::Src::kWWWW));
     }
+  }
+
+  // AC6 sun-flare "square" fix - drop the flare's second billboard
+  // This VS (ADF9AFC4C10921B9) emits two billboards per flare draw: V0-V3 =
+  // the visible glow quad, V4-V7 = a huge malformed quad (corners far
+  // off-screen, garbage UVs) that is invisible on real hardware but
+  // mis-renders in the emulator as a faint bright-edged rectangle. Cull it
+  // the same way as kill-vertex above: NaN the output position of vertices
+  // with index >= the threshold so the rasterizer discards the primitive.
+  // V0-V3 (the real glow) are untouched.
+  if (REXCVAR_GET(ac6_flare_drop_quad2) &&
+      current_shader().ucode_data_hash() == 0xADF9AFC4C10921B9ull &&
+      GetDxbcShaderModification().vertex.host_vertex_shader_type ==
+          Shader::HostVertexShaderType::kVertex) {
+    int32_t ac6_drop_index_min = REXCVAR_GET(ac6_flare_drop_index_min);
+    if (ac6_drop_index_min < 0) {
+      ac6_drop_index_min = 0;
+    }
+    uint32_t ac6_drop_temp = PushSystemTemp();
+    // ac6_drop_temp.x = (SV_VertexID >= index_min) ? 0xFFFFFFFF : 0
+    a_.OpUGE(dxbc::Dest::R(ac6_drop_temp, 0b0001),
+             dxbc::Src::V1D(kInRegisterVSVertexIndex, dxbc::Src::kXXXX),
+             dxbc::Src::LU(uint32_t(ac6_drop_index_min)));
+    // NaN the whole position of culled vertices.
+    a_.OpMovC(dxbc::Dest::R(system_temp_position_, 0b1111),
+              dxbc::Src::R(ac6_drop_temp, dxbc::Src::kXXXX),
+              dxbc::Src::LF(std::nanf("")), dxbc::Src::R(system_temp_position_));
+    // Release ac6_drop_temp.
+    PopSystemTemp();
   }
 
   // Write the position to the output.
