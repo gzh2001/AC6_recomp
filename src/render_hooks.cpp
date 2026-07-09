@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 
 #include <rex/cvar.h>
 #include <rex/graphics/graphics_system.h>
@@ -22,6 +23,11 @@ REXCVAR_DEFINE_BOOL(ac6_dynamic_vblank, true, "AC6",
                     "free-runs at the configured rate. Gameplay is detected via the "
                     "world-compositor draw heartbeat; cutscenes via the cinematic "
                     "hooks.");
+REXCVAR_DEFINE_BOOL(ac6_delta_precision, true, "AC6",
+                    "With the FPS unlock active, carry the fractional remainder of the "
+                    "game's integer frame delta across frames so its floor(x)+1 "
+                    "truncation guard stops inflating game speed at high framerates "
+                    "(+2% at 60fps, +10% at 300fps)");
 
 using Clock = std::chrono::steady_clock;
 
@@ -122,6 +128,49 @@ void ac6DeltaDivisorHook(PPCRegister& r29) {
         return;
     }
     r29.u64 = 30;
+}
+
+// Fires right after the game turns the measured frame time into its integer
+// delta: r8 = min(floor(elapsed*100 / (freq/divisor)) + 1, 100). Under the
+// unlock the floor plus the +1 guard bias the delta high by (1 - frac) every
+// frame - a systematic speed-up at unlocked framerates (+2% @60fps, +10% @300).
+// Carry the fractional remainder across frames so the SUM of integer deltas
+// tracks real time exactly. Only active while the divisor remap is (r29 == 30);
+// otherwise the vanilla value passes through and the remainder resets so no
+// stale correction leaks across mode changes.
+void ac6DeltaPrecisionHook(PPCRegister& r8, PPCRegister& r10, PPCRegister& r29, PPCRegister& r30) {
+  static double s_remainder = 0.0;
+
+  // Cheapest gates first: the register compares are free, the cvar/clock work
+  // only runs on the frames that can actually take the rewrite path.
+  if (r29.u32 != 30 || r10.u32 == 0 || !AreTimingHooksActive()) {
+    s_remainder = 0.0;
+    return;
+  }
+  if (!REXCVAR_GET(ac6_delta_precision)) {
+    s_remainder = 0.0;
+    return;
+  }
+  const double max_delta = 100.0;  // the game's stock 30fps delta clamp
+
+  // Exact delta this frame in the game's own scale (elapsed * 3000), using the
+  // same ticks-per-frame divisor (r10 = freq / 30) the game divided by.
+  double exact = double(r30.u32) * 100.0 / double(r10.u32);
+  if (exact > max_delta) {
+    exact = max_delta;
+  }
+
+  // Carry the remainder (no +1) so the summed integer deltas track real time.
+  const double base = s_remainder + exact;
+  double delta = std::floor(base);
+  if (delta < 1.0) {
+    delta = 1.0;  // the game guarantees progress every frame; the overshoot is
+                  // repaid through a negative remainder next frame
+  } else if (delta > max_delta) {
+    delta = max_delta;
+  }
+  s_remainder = base - delta;
+  r8.u64 = uint64_t(delta);
 }
 
 void ac6PresentTimingHook(PPCRegister& /*r31*/) {

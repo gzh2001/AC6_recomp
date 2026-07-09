@@ -46,6 +46,7 @@ bool WorldRenderActiveRecently();
 bool ac6FlipIntervalHook();
 bool ac6PresentIntervalHook(PPCRegister& r10);
 void ac6DeltaDivisorHook(PPCRegister& r29);
+void ac6DeltaPrecisionHook(PPCRegister& r8, PPCRegister& r10, PPCRegister& r29, PPCRegister& r30);
 void ac6PresentTimingHook(PPCRegister& r31);
 
 // Fires once per frame from the demo-manager Exec while a cutscene is playing.
