@@ -49,6 +49,14 @@ bool AreTimingHooksActive() {
 
 namespace ac6 {
 
+// True while the FPS-unlock timing hooks are remapping the game's cadence
+// (unlock cvars on and no cutscene clamp). The physics force-step rescale keys
+// off this so it stays in lockstep with the frame-delta hooks: whenever the
+// delta reverts to vanilla, the force step must too.
+bool TimingHooksActive() {
+  return AreTimingHooksActive();
+}
+
 bool IsCinematicActive() {
     if (!REXCVAR_GET(ac6_cutscene_clamp)) {
         return false;

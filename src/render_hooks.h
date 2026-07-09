@@ -19,6 +19,11 @@ struct FrameStats {
 
 FrameStats GetFrameStats();
 
+// True while the FPS-unlock timing hooks are remapping the game's cadence
+// (unlock cvars on and no cutscene clamp). The physics force-step rescale keys
+// off this so it stays in lockstep with the frame-delta hooks.
+bool TimingHooksActive();
+
 // True while an in-engine cutscene (NU::FW::IngameCinematics, driven by
 // CAce6DemoManager::Exec) has ticked within the last decay window. Used by the
 // timing hooks to suspend the 60fps unlock so cutscenes play at native cadence.
