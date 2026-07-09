@@ -32,6 +32,8 @@ REXCVAR_DECLARE(bool, guest_vblank_sync_to_refresh);
 REXCVAR_DECLARE(bool, host_present_from_non_ui_thread);
 #if REX_HAS_D3D12
 REXCVAR_DECLARE(bool, d3d12_allow_variable_refresh_rate_and_tearing);
+REXCVAR_DECLARE(bool, d3d12_low_latency_swap_chain);
+REXCVAR_DECLARE(int32_t, d3d12_max_frame_latency);
 #endif
 REXCVAR_DECLARE(bool, vfetch_index_rounding_bias);
 REXCVAR_DECLARE(int32_t, video_mode_width);
@@ -114,11 +116,17 @@ void ApplyAc6DefaultSettings() {
         REXCVAR_SET(guest_vblank_sync_to_refresh, true);
     }
     if (!rex::cvar::HasNonDefaultValue("host_present_from_non_ui_thread")) {
-        REXCVAR_SET(host_present_from_non_ui_thread, false);
+        REXCVAR_SET(host_present_from_non_ui_thread, true);
     }
 #if REX_HAS_D3D12
     if (!rex::cvar::HasNonDefaultValue("d3d12_allow_variable_refresh_rate_and_tearing")) {
-        REXCVAR_SET(d3d12_allow_variable_refresh_rate_and_tearing, false);
+        REXCVAR_SET(d3d12_allow_variable_refresh_rate_and_tearing, true);
+    }
+    if (!rex::cvar::HasNonDefaultValue("d3d12_low_latency_swap_chain")) {
+        REXCVAR_SET(d3d12_low_latency_swap_chain, true);
+    }
+    if (!rex::cvar::HasNonDefaultValue("d3d12_max_frame_latency")) {
+        REXCVAR_SET(d3d12_max_frame_latency, 1);
     }
 #endif
     if (!rex::cvar::HasNonDefaultValue("vfetch_index_rounding_bias")) {
