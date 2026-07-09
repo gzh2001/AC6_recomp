@@ -35,6 +35,7 @@
 
 #include "../../../../../src/ac6_backend_fixes/ac6_backend_hooks.h"
 #include "../../../../../src/ac6_native_graphics.h"
+#include "../../../../../src/render_hooks.h"
 
 REXCVAR_DEFINE_BOOL(d3d12_bindless, true, "GPU/D3D12", "Use bindless resources where available")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
@@ -2659,6 +2660,13 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type, uint3
   }
   bool memexport_used_pixel = pixel_shader && (pixel_shader->memexport_eM_written() != 0);
   bool memexport_used = memexport_used_vertex || memexport_used_pixel;
+
+  // AC6: the world/effects compositor draws once per frame whenever the 3D
+  // world renders (never in the 2D front-end) - stamp it as the "gameplay
+  // world active" signal for the dynamic FPS pacing.
+  if (pixel_shader && pixel_shader->ucode_data_hash() == UINT64_C(0x17e5e4ac3e713245)) {
+    ac6::NotifyWorldCompositorDraw();
+  }
 
   if (!BeginSubmission(true)) {
     return false;
