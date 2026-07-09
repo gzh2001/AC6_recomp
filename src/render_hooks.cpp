@@ -6,6 +6,8 @@
 #include <chrono>
 
 #include <rex/cvar.h>
+#include <rex/graphics/graphics_system.h>
+#include <rex/logging.h>
 #include <rex/system/kernel_state.h>
 
 REXCVAR_DEFINE_BOOL(ac6_unlock_fps, false, "AC6", "Unlock frame rate to 60fps");
@@ -14,6 +16,12 @@ REXCVAR_DEFINE_BOOL(ac6_timing_hooks_enabled, true, "AC6",
 REXCVAR_DEFINE_BOOL(ac6_cutscene_clamp, true, "AC6",
                     "Suspend the 60fps unlock during in-engine cutscenes so they "
                     "play at native ~30fps instead of double speed");
+REXCVAR_DEFINE_BOOL(ac6_dynamic_vblank, true, "AC6",
+                    "With the FPS unlock active, pace frame-locked content (menus, "
+                    "cutscenes, pause) at the native 60Hz guest vblank while gameplay "
+                    "free-runs at the configured rate. Gameplay is detected via the "
+                    "world-compositor draw heartbeat; cutscenes via the cinematic "
+                    "hooks.");
 
 using Clock = std::chrono::steady_clock;
 
@@ -34,15 +42,38 @@ std::atomic<int64_t> g_last_cinematic_tick_ms{INT64_MIN};
 // auto-releases shortly after it ends.
 constexpr int64_t kCinematicDecayMs = 100;
 
+// Wall-clock ms of the last draw using the world/effects compositor pixel
+// shader (stamped by the GPU command processor via NotifyWorldCompositorDraw).
+// The compositor runs every frame the 3D world renders and never in the 2D
+// front-end, so its freshness distinguishes free-runnable gameplay from
+// frame-locked menus/hangar. (The delta-time hook was tried first as this
+// signal, but it lives in the frame layer and ticks in menus too.)
+// INT64_MIN = never drawn.
+std::atomic<int64_t> g_last_world_draw_ms{INT64_MIN};
+constexpr int64_t kWorldDrawDecayMs = 300;
+
 int64_t NowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                Clock::now().time_since_epoch())
         .count();
 }
 
+bool IsWorldRenderActive() {
+  const int64_t last = g_last_world_draw_ms.load(std::memory_order_relaxed);
+  if (last == INT64_MIN) {
+    return false;
+  }
+  return (NowMs() - last) <= kWorldDrawDecayMs;
+}
+
 bool AreTimingHooksActive() {
+    // The world-render gate only applies under dynamic vblank pacing: it exists
+    // to keep menus/hangar at native cadence, and it fails closed (a game
+    // build/render path whose compositor shader hashes differently would never
+    // stamp it). ac6_dynamic_vblank=false restores the plain always-on unlock.
     return REXCVAR_GET(ac6_timing_hooks_enabled) && REXCVAR_GET(ac6_unlock_fps) &&
-           !ac6::IsCinematicActive();
+           !ac6::IsCinematicActive() &&
+           (!REXCVAR_GET(ac6_dynamic_vblank) || IsWorldRenderActive());
 }
 
 }  // namespace
@@ -55,6 +86,10 @@ namespace ac6 {
 // delta reverts to vanilla, the force step must too.
 bool TimingHooksActive() {
   return AreTimingHooksActive();
+}
+
+bool WorldRenderActiveRecently() {
+  return IsWorldRenderActive();
 }
 
 bool IsCinematicActive() {
@@ -92,6 +127,24 @@ void ac6DeltaDivisorHook(PPCRegister& r29) {
 void ac6PresentTimingHook(PPCRegister& /*r31*/) {
     // ac6::d3d::OnFrameBoundary(); // MOVED TO GPU THREAD
 
+  // Dynamic vblank pacing: free-run only while the 3D world is rendering; pace
+  // frame-locked content (menus, hangar, cutscenes) at the native 60Hz. Only
+  // engages when the FPS unlock is on, so default configurations keep the plain
+  // cvar-driven vblank behavior.
+  const bool unlock = REXCVAR_GET(ac6_timing_hooks_enabled) && REXCVAR_GET(ac6_unlock_fps);
+  const bool dynamic_pacing = REXCVAR_GET(ac6_dynamic_vblank) && unlock;
+  // Single source of truth for "the unlock is remapping the cadence right now" -
+  // the same signal that gates the interval/delta hooks and the physics rescale.
+  const bool free_running = dynamic_pacing && AreTimingHooksActive();
+
+  // Guest-vblank Hz override for this frame. 0 = no override (free-run at the
+  // vsync/tearing rate); dynamic pacing forces frame-locked content to 60Hz.
+  double override_hz = 0.0;
+  if (dynamic_pacing && !free_running) {
+    override_hz = 60.0;
+  }
+  rex::graphics::GraphicsSystem::SetGuestVblankHzOverride(override_hz);
+
     const auto now = Clock::now();
     if (g_frame_start.time_since_epoch().count() != 0) {
         const double frame_time_ms =
@@ -102,6 +155,19 @@ void ac6PresentTimingHook(PPCRegister& /*r31*/) {
         g_frame_count.fetch_add(1, std::memory_order_relaxed);
     }
     g_frame_start = now;
+
+  // Log the first handful of pacing transitions.
+  static double last_log_key = -0.5;
+  static uint32_t transition_logs = 0;
+  if (unlock && override_hz != last_log_key && transition_logs < 32) {
+    ++transition_logs;
+    if (override_hz == 0.0) {
+      REXLOG_INFO("[AC6-VBLANK] pacing -> free-run (uncapped)");
+    } else {
+      REXLOG_INFO("[AC6-VBLANK] pacing -> {:.0f}Hz guest vblank", override_hz);
+    }
+  }
+  last_log_key = override_hz;
 }
 
 void ac6CinematicTickHook(PPCRegister& /*r3*/) {
@@ -119,6 +185,10 @@ FrameStats GetFrameStats() {
     return FrameStats{g_frame_time_ms.load(std::memory_order_relaxed),
                       g_fps.load(std::memory_order_relaxed),
                       g_frame_count.load(std::memory_order_relaxed)};
+}
+
+void NotifyWorldCompositorDraw() {
+  g_last_world_draw_ms.store(NowMs(), std::memory_order_relaxed);
 }
 
 }  // namespace ac6

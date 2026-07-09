@@ -29,6 +29,18 @@ bool TimingHooksActive();
 // timing hooks to suspend the 60fps unlock so cutscenes play at native cadence.
 bool IsCinematicActive();
 
+// Called by the GPU command processor whenever a draw uses the world/effects
+// compositor pixel shader (guest ucode 17e5e4ac3e713245). The compositor runs
+// once per frame whenever the 3D world is being rendered and never in the 2D
+// front-end (menus, hangar), so its freshness is the "gameplay world active"
+// signal for the dynamic FPS pacing.
+void NotifyWorldCompositorDraw();
+
+// True while a world-compositor draw happened within the last decay window
+// (i.e. the 3D world is being rendered - gameplay or in-engine cutscene, not
+// the 2D front-end). Same signal the dynamic FPS pacing uses.
+bool WorldRenderActiveRecently();
+
 }  // namespace ac6
 
 bool ac6FlipIntervalHook();
