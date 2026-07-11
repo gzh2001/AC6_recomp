@@ -10606,6 +10606,26 @@ address = 0x821EFD74
 name = "ac6DeltaPrecisionHook"
 registers = ["r8", "r10", "r29", "r30"]
 
+# Scale the flight model's per-frame vertical lift-deficit drop by the
+# frame-step ratio (see ac6_fps_physics_fix).
+#
+# In the core force step rex_sub_823046A0, f9 = |lift-deficit| is subtracted
+# from the vertical velocity AFTER the 1/dt-weighted path smoothing mix, and
+# the result is re-normalized into the stored flight-path direction
+# [fm+128..136]. Inside that feedback loop the drop's equilibrium
+# contribution is amplified by (1 + retention) with retention ~ 1/dt, so the
+# steady-state angle of attack scales with framerate: a hands-off glide at
+# 60fps settles on a ~2 degree steeper path than at 30fps with identical
+# attitude and identical force inputs (measured). This hook fires at
+# 0x82304F40 (the `fsubs f11,f11,f9` that applies the drop) and scales f9 by
+# frame_ms/33.3ms, which makes the equilibrium framerate-independent while
+# changing the drop's small direct velocity share (~1/retention of the
+# effect) by under 2%. Exact no-op at the native 30fps cadence.
+[[midasm_hook]]
+address = 0x82304F40
+name = "ac6PathDropHook"
+registers = ["f9"]
+
 # Record frame timestamps at each D3DDevice_Swap call for timing overlay.
 # Placed before the device[21516] branch so it fires unconditionally —
 # when that field is non-zero the function skips VdSwap, which caused

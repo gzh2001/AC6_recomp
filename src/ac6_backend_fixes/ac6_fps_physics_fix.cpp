@@ -45,6 +45,39 @@
 // Both symbols are weak in the generated code and registered by address in
 // ac6recomp_init, so these strong overrides capture direct calls and vtable
 // dispatch alike.
+//
+// One term needs a different treatment: the sink-rate / angle-of-attack
+// equilibrium (the ac6PathDropHook mid-asm hook at the bottom of this file,
+// registered in ac6recomp_config.toml at 0x82304F40). Inside the core force
+// step, the stored flight-path direction [this+128..136] - the direction the
+// aircraft actually travels, distinct from where the nose points - is rebuilt
+// each call as
+//
+//     vel      = |V| * normalize(unit(V) + w * path_old) - drop * up
+//     path_new = normalize(vel)
+//
+// where w = [this+324]*const/dt is the old-path retention (1/dt-weighted, so
+// the smoothing itself is framerate-correct) and drop = |lift-deficit| is
+// subtracted from the vertical once per CALL. Because the drop lands inside
+// that feedback loop, its steady-state contribution is amplified by (1 + w):
+// the equilibrium angle of attack is (drop/|V|) * (1 + w), and w doubles at
+// 60fps. Measured on a hands-off glide: every INPUT to the step (force
+// vector [this+1328..1340], speed, deficit fields) is identical between
+// framerates, yet the path settles ~2 degrees steeper at 60fps - same speed
+// down a steeper line means a faster sink and an earlier ground impact
+// (reported as gravity pulling harder at high fps, worse inverted since the
+// deficit is larger).
+//
+// The pre/post blend above cannot fix that: blending rescales an update's
+// RATE but shares its fixed points, so it can never move a framerate-
+// dependent equilibrium (confirmed experimentally - the settle slowed, the
+// floor did not move). Instead the hook scales the drop itself by the same
+// frame-time ratio at the exact instruction that applies it, which cancels
+// the 1/dt amplification: the equilibrium becomes drop*C/33.3ms/|V| at any
+// framerate. The drop's direct (unamplified) share of the sink velocity is
+// only ~1/w (~3%) of the effect, so scaling it perturbs the true sink rate
+// by well under 2%; at the native cadence the multiply is a bit-exact no-op.
+// The alternate-mode step applies no such in-loop drop and needs no hook.
 
 #include <atomic>
 #include <cstdint>
@@ -168,4 +201,17 @@ PPC_FUNC_IMPL(rex_sub_82329B40) {
   static bool s_logged = false;
   BlendFieldDelta(base, self + kTriggerCommandOffset, pre, ratio, "trigger-command(+1456)",
                   s_logged);
+}
+
+// Mid-asm hook (registered in ac6recomp_config.toml at 0x82304F40, the
+// `fsubs f11,f11,f9` inside rex_sub_823046A0): f9 holds the vertical
+// lift-deficit drop about to be subtracted from the velocity that becomes the
+// stored flight-path direction. Scaling it by the frame-step ratio makes the
+// angle-of-attack equilibrium framerate-independent (see the file header for
+// the mechanism). StepRatio() returns exactly 1.0 at the native cadence or
+// with the fix disabled, and x *= 1.0 is bit-exact, so this is a strict no-op
+// there. Runs on the guest sim thread inside the wrapped force step, where
+// the per-frame ratio is already cached.
+void ac6PathDropHook(PPCRegister& f9) {
+  f9.f64 *= StepRatio();
 }
