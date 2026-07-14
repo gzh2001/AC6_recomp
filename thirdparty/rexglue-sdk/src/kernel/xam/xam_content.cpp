@@ -15,7 +15,10 @@
 #include <rex/system/xenumerator.h>
 #include <rex/system/xtypes.h>
 
-REXCVAR_DEFINE_UINT32(license_mask, 0, "Kernel", "Set license mask for activated content");
+// Defined in the system layer (content_manager.cpp) so the global mask and the
+// per-package license fallback share one knob. rexkernel links rexsystem
+// (PUBLIC), so the symbol resolves here.
+REXCVAR_DECLARE(uint32_t, license_mask);
 
 namespace rex {
 namespace kernel {
