@@ -15,6 +15,7 @@
 
 #include "ac6_native_graphics.h"
 #include "ac6_native_graphics_overlay.h"
+#include "render_hooks.h"
 #include "generated/ac6recomp_config.h"
 
 REXCVAR_DECLARE(std::string, ac6_graphics_backend);
@@ -78,6 +79,17 @@ class Ac6recompApp : public rex::ReXApp {
     native_graphics_status_dialog_ =
         std::make_unique<ac6::graphics::NativeGraphicsStatusDialog>(drawer);
     native_graphics_status_dialog_->Show();
+
+    // Feed the F3 debug overlay the game's own frame stats so its guest
+    // frametime graph and counter reflect the real sim cadence (SDK cannot
+    // reach into the AC6 app layer, so it takes them through this callback).
+    // Must be here, not OnPostSetup: the debug overlay is created just before
+    // OnCreateDialogs, but OnPostSetup runs BEFORE the overlay exists, so a
+    // provider set there is silently dropped.
+    SetGuestFrameStats([]() -> rex::ui::FrameStats {
+        const ::ac6::FrameStats s = ::ac6::GetFrameStats();
+        return rex::ui::FrameStats{s.frame_time_ms, s.fps, s.frame_count};
+    });
   }
 
  private:
