@@ -91,11 +91,6 @@
 
 #include "../render_hooks.h"
 
-REXCVAR_DEFINE_BOOL(ac6_fps_physics_fix, true, "AC6",
-                    "Make flight-model accel/decel framerate-independent when the FPS unlock "
-                    "is active (rescales the game's fixed per-frame force steps by "
-                    "frame time / 33.3ms)");
-
 namespace {
 
 // Longitudinal force/speed-command accumulator in the flight-model object
@@ -112,12 +107,13 @@ constexpr double kNativeFrameMs = 1000.0 / 30.0;
 // wrappers are the sole callers), so plain statics are safe throughout.
 
 // Per-frame-step scale for this frame: 1.0 at the native 30fps cadence,
-// shrinking as the frame rate rises (never above 1.0 - the game's own delta
-// clamp already holds sim speed at/below 30fps). Gated on the SAME signal as
-// the frame-delta hooks (ac6::TimingHooksActive) so the force step and the
-// kinematics delta always revert to vanilla together (cutscene clamp, menus,
-// unlock off). Returns exactly 1.0 for a pass-through. Inputs change at most
-// once per guest frame, so the result is cached per frame.
+// shrinking as the frame rate rises. Below 30fps it keeps growing (up to the
+// ac6_min_sim_fps floor via ac6::ClampedMinSimFps) so the per-frame dynamics
+// track the raised delta clamp instead of freezing at the 30fps step. Gated on
+// the SAME signal as the frame-delta hooks (ac6::TimingHooksActive) so the
+// dynamics and the kinematics delta always revert to vanilla together
+// (cutscene clamp, menus, unlock off). Returns exactly 1.0 for a pass-through.
+// Inputs change at most once per guest frame, so the result is cached.
 double StepRatio() {
   static uint64_t s_cached_frame = ~uint64_t(0);
   static double s_cached_ratio = 1.0;
@@ -127,15 +123,18 @@ double StepRatio() {
   }
   s_cached_frame = stats.frame_count;
   s_cached_ratio = 1.0;
-  if (!REXCVAR_GET(ac6_fps_physics_fix) || !ac6::TimingHooksActive()) {
+  // Framerate-independence is part of the unlock; gate on the unlock alone
+  // (was the separate ac6_fps_physics_fix cvar, now folded in).
+  if (!ac6::TimingHooksActive()) {
     return s_cached_ratio;
   }
   if (stats.frame_time_ms <= 0.0) {
     return s_cached_ratio;  // no frame measured yet
   }
+  const double ratio_cap = 30.0 / ac6::ClampedMinSimFps();
   double ratio = stats.frame_time_ms / kNativeFrameMs;
-  if (ratio > 1.0) {
-    ratio = 1.0;  // never blend past the native 30fps step
+  if (ratio > ratio_cap) {
+    ratio = ratio_cap;
   } else if (ratio < 0.02) {
     ratio = 0.02;  // sanity floor against a bogus frame-time sample
   }

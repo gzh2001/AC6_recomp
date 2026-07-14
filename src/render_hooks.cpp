@@ -6,14 +6,25 @@
 #include <chrono>
 #include <cmath>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
+#include <native/thread.h>
 #include <rex/cvar.h>
 #include <rex/graphics/graphics_system.h>
 #include <rex/logging.h>
 #include <rex/system/kernel_state.h>
 
-REXCVAR_DEFINE_BOOL(ac6_unlock_fps, false, "AC6", "Unlock frame rate to 60fps");
-REXCVAR_DEFINE_BOOL(ac6_timing_hooks_enabled, true, "AC6",
-                    "Enable AC6 timing hooks that alter the game's presentation cadence");
+REXCVAR_DEFINE_BOOL(ac6_unlock_fps, true, "AC6",
+                    "Master switch for the smooth 60fps unlock (modern present pacing + "
+                    "dt-snap + physics dt-correction). On by default; false = stock behaviour.");
 REXCVAR_DEFINE_BOOL(ac6_cutscene_clamp, true, "AC6",
                     "Suspend the 60fps unlock during in-engine cutscenes so they "
                     "play at native ~30fps instead of double speed");
@@ -23,13 +34,89 @@ REXCVAR_DEFINE_BOOL(ac6_dynamic_vblank, true, "AC6",
                     "free-runs at the configured rate. Gameplay is detected via the "
                     "world-compositor draw heartbeat; cutscenes via the cinematic "
                     "hooks.");
-REXCVAR_DEFINE_BOOL(ac6_delta_precision, true, "AC6",
-                    "With the FPS unlock active, carry the fractional remainder of the "
-                    "game's integer frame delta across frames so its floor(x)+1 "
-                    "truncation guard stops inflating game speed at high framerates "
-                    "(+2% at 60fps, +10% at 300fps)");
+REXCVAR_DEFINE_DOUBLE(ac6_fps_target, 60.0, "AC6",
+                      "The rate the simulation + presentation run at under the FPS unlock. "
+                      ">0 = that exact rate (clamped to 30..ac6_max_sim_fps). "
+                      "0 = AUTO: the largest rate <= ac6_max_sim_fps that evenly divides your "
+                      "monitor's refresh, so frames land on refresh boundaries instead of "
+                      "beating against them (240Hz->60, 144Hz->48, 120Hz->60, 60Hz->60). "
+                      "Pick a target that divides your refresh; auto does this for you. "
+                      "Mirrors PA's native PC engine, which has no separate cap and simply "
+                      "runs the (dt-correct) sim at the display rate.");
+REXCVAR_DEFINE_DOUBLE(ac6_max_sim_fps, 60.0, "AC6",
+                      "Ceiling on the simulation/pacing rate. AC6's physics is only validated "
+                      "to 60fps; above it, fixed-step assumptions surface (untested regime). "
+                      "Both ac6_fps_target and the auto (refresh-matched) target are clamped to "
+                      "this. Raise only once the >60 regime has been validated.");
+REXCVAR_DEFINE_BOOL(ac6_dt_snap, true, "AC6",
+                    "With the FPS unlock active, snap the per-frame simulation delta to the "
+                    "EXACT pacing target when the real frame time is within ~1ms of it, so "
+                    "the fixed-step integrator sees a constant step. Removes the residual "
+                    "per-frame delta jitter that a fixed-step sim turns into visible shake; "
+                    "genuine slowdowns fall through to the precision path.");
+REXCVAR_DEFINE_DOUBLE(ac6_min_sim_fps, 20.0, "AC6",
+                      "Lowest framerate the simulation runs at true speed before the "
+                      "game's frame-delta clamp forces slow motion. The stock game floors "
+                      "at 30 (below 30fps it plays in slow motion); this lowers the floor "
+                      "(default 20) so a sub-30fps dip runs at correct speed - just "
+                      "choppier - instead of slowing down and rubber-banding on recovery. "
+                      "Set 30 for stock behavior. Active with the FPS unlock; drives the "
+                      "frame-delta clamp and the physics step cap together so dynamics "
+                      "stay consistent with the kinematics.");
 
 using Clock = std::chrono::steady_clock;
+
+// Current monitor refresh rate in Hz, 0 if unknown. Cached on first use (a
+// mid-session refresh change is rare enough to need a restart).
+static double HostRefreshHz() {
+  static double cached = -1.0;
+  if (cached >= 0.0) {
+    return cached;
+  }
+  cached = 0.0;
+#if defined(_WIN32)
+  DEVMODEW dm;
+  ZeroMemory(&dm, sizeof(dm));
+  dm.dmSize = sizeof(dm);
+  if (EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &dm) && dm.dmDisplayFrequency > 1) {
+    cached = double(dm.dmDisplayFrequency);
+  }
+#endif
+  return cached;
+}
+
+// Single source of truth for the sim/presentation rate under the unlock, so the
+// pacing limiter and the dt-snap always agree. See ac6_fps_target / ac6_max_sim_fps.
+static double ResolvePacingTargetFps() {
+  // Absolute floor (10) lets sub-30 rates be targeted for testing; below
+  // ac6_min_sim_fps the sim goes slow-mo (expected), but the rate is honored.
+  constexpr double kMinTargetFps = 10.0;
+  double ceil_fps = REXCVAR_GET(ac6_max_sim_fps);
+  if (ceil_fps < kMinTargetFps) ceil_fps = kMinTargetFps;
+  if (ceil_fps > 240.0) ceil_fps = 240.0;
+
+  double target = REXCVAR_GET(ac6_fps_target);
+  if (target > 0.0) {
+    if (target < kMinTargetFps) target = kMinTargetFps;
+    if (target > ceil_fps) target = ceil_fps;
+    return target;
+  }
+
+  // Auto: largest integer in [kMinTargetFps, ceil] that evenly divides the
+  // refresh rate, so frames align to refresh boundaries instead of beating.
+  const double refresh = HostRefreshHz();
+  if (refresh < kMinTargetFps) {
+    return ceil_fps;  // unknown refresh: just run at the ceiling
+  }
+  const int hz = int(refresh + 0.5);
+  for (int f = int(ceil_fps + 0.5); f >= int(kMinTargetFps); --f) {
+    if (hz % f == 0) {
+      return double(f);
+    }
+  }
+  // No clean divisor >= 30 (e.g. 50/75Hz): fall back to min(refresh, ceiling).
+  return refresh < ceil_fps ? refresh : ceil_fps;
+}
 
 namespace {
 
@@ -77,7 +164,7 @@ bool AreTimingHooksActive() {
     // to keep menus/hangar at native cadence, and it fails closed (a game
     // build/render path whose compositor shader hashes differently would never
     // stamp it). ac6_dynamic_vblank=false restores the plain always-on unlock.
-    return REXCVAR_GET(ac6_timing_hooks_enabled) && REXCVAR_GET(ac6_unlock_fps) &&
+    return REXCVAR_GET(ac6_unlock_fps) &&
            !ac6::IsCinematicActive() &&
            (!REXCVAR_GET(ac6_dynamic_vblank) || IsWorldRenderActive());
 }
@@ -92,6 +179,16 @@ namespace ac6 {
 // delta reverts to vanilla, the force step must too.
 bool TimingHooksActive() {
   return AreTimingHooksActive();
+}
+
+double ClampedMinSimFps() {
+  double min_fps = REXCVAR_GET(ac6_min_sim_fps);
+  if (min_fps < 10.0) {
+    min_fps = 10.0;
+  } else if (min_fps > 30.0) {
+    min_fps = 30.0;  // can't floor above 30fps - that would slow 30fps content
+  }
+  return min_fps;
 }
 
 bool WorldRenderActiveRecently() {
@@ -147,29 +244,60 @@ void ac6DeltaPrecisionHook(PPCRegister& r8, PPCRegister& r10, PPCRegister& r29, 
     s_remainder = 0.0;
     return;
   }
-  if (!REXCVAR_GET(ac6_delta_precision)) {
+  const bool precision = true;  // always on now (frame-delta correctness)
+  const double min_fps = ac6::ClampedMinSimFps();
+  const bool raise_floor = min_fps < 30.0;
+  if (!precision && !raise_floor) {
     s_remainder = 0.0;
     return;
   }
-  const double max_delta = 100.0;  // the game's stock 30fps delta clamp
+  // The delta clamp becomes 3000/min_fps instead of the stock 100 (30fps->100,
+  // 20fps->150): the sim keeps true speed down to min_fps before slow motion.
+  const double max_delta = 3000.0 / min_fps;
 
   // Exact delta this frame in the game's own scale (elapsed * 3000), using the
-  // same ticks-per-frame divisor (r10 = freq / 30) the game divided by.
+  // same ticks-per-frame divisor (r10 = freq / 30) the game divided by. Clamp
+  // to the floor: time slower than min_fps is dropped, not banked.
   double exact = double(r30.u32) * 100.0 / double(r10.u32);
   if (exact > max_delta) {
     exact = max_delta;
   }
 
-  // Carry the remainder (no +1) so the summed integer deltas track real time.
-  const double base = s_remainder + exact;
+  // dt-snap: at a steady framerate near the pacing target, force the delta to the
+  // EXACT target value so the fixed-step integrator sees a constant step. This is
+  // what removes the residual per-frame jitter (the aircraft shake) that survives
+  // smooth pacing - a fixed-step sim amplifies even sub-millisecond dt variance.
+  // Only engages within a tight window of the target; genuine slowdowns/speedups
+  // fall through to the precision path below. Mirrors PA's native PC engine, which
+  // feeds a constant dt at a steady rate. The target matches the pacing limiter
+  // exactly (shared ResolvePacingTargetFps), so sim and presentation stay locked.
+  if (REXCVAR_GET(ac6_dt_snap)) {
+    const double target_fps = ResolvePacingTargetFps();
+    const double target_delta = 3000.0 / target_fps;                  // game units, 100 = 30fps
+    const double tol_units = 3.0;  // ~1ms window (100 delta-units = 33.3ms, so 1ms = 3)
+    if (tol_units > 0.0 && target_delta <= max_delta &&
+        std::fabs(exact - target_delta) < tol_units) {
+      double snapped = std::floor(target_delta + 0.5);
+      if (snapped < 1.0) {
+        snapped = 1.0;
+      }
+      s_remainder = 0.0;  // locked to target; no fractional carry
+      r8.u64 = uint64_t(snapped);
+      return;
+    }
+  }
+
+  // precision on: carry the remainder (no +1). precision off: keep the game's
+  // floor(exact)+1 integer. floor(exact + 1) == floor(exact) + 1.
+  const double base = precision ? (s_remainder + exact) : (exact + 1.0);
   double delta = std::floor(base);
   if (delta < 1.0) {
-    delta = 1.0;  // the game guarantees progress every frame; the overshoot is
-                  // repaid through a negative remainder next frame
+    delta = 1.0;  // the game guarantees progress every frame; on the precision
+                  // path the overshoot is repaid through a negative remainder
   } else if (delta > max_delta) {
     delta = max_delta;
   }
-  s_remainder = base - delta;
+  s_remainder = precision ? (base - delta) : 0.0;
   r8.u64 = uint64_t(delta);
 }
 
@@ -180,19 +308,35 @@ void ac6PresentTimingHook(PPCRegister& /*r31*/) {
   // frame-locked content (menus, hangar, cutscenes) at the native 60Hz. Only
   // engages when the FPS unlock is on, so default configurations keep the plain
   // cvar-driven vblank behavior.
-  const bool unlock = REXCVAR_GET(ac6_timing_hooks_enabled) && REXCVAR_GET(ac6_unlock_fps);
+  const bool unlock = REXCVAR_GET(ac6_unlock_fps);
   const bool dynamic_pacing = REXCVAR_GET(ac6_dynamic_vblank) && unlock;
   // Single source of truth for "the unlock is remapping the cadence right now" -
   // the same signal that gates the interval/delta hooks and the physics rescale.
   const bool free_running = dynamic_pacing && AreTimingHooksActive();
 
-  // Guest-vblank Hz override for this frame. 0 = no override (free-run at the
-  // vsync/tearing rate); dynamic pacing forces frame-locked content to 60Hz.
+  // Frame pacing for this frame. Precedence:
+  //   1. frame-locked content (menus, cutscenes) -> fixed 60Hz vblank override;
+  //   2. gameplay with ac6_vblank_auto -> modern present pacing: the guest
+  //      vblank free-runs (gates nothing) and the game's swap thread instead
+  //      blocks on real GPU delivery plus an absolute-deadline limiter at
+  //      ac6_fps_target. The game runs at min(target, real GPU throughput)
+  //      with uniform frame times - no vblank grid, so a sub-target GPU can
+  //      never alias into the 60/30 sub-harmonic staircase;
+  //   3. otherwise the plain cvar-driven vblank (previous behavior).
   double override_hz = 0.0;
+  double pacing_target_hz = 0.0;
   if (dynamic_pacing && !free_running) {
     override_hz = 60.0;
+  } else if (free_running) {
+    // Force the guest vblank to free-run (non-gating) during gameplay so
+    // PaceGuestPresent is the SOLE gate, regardless of the vsync /
+    // guest_vblank_sync_to_refresh cvars (whose defaults would otherwise re-add
+    // a 60Hz gate). This makes the smooth unlock work with zero configuration.
+    override_hz = 1000.0;
+    pacing_target_hz = ResolvePacingTargetFps();
   }
   rex::graphics::GraphicsSystem::SetGuestVblankHzOverride(override_hz);
+  rex::graphics::GraphicsSystem::SetGuestPresentPacing(pacing_target_hz);
 
     const auto now = Clock::now();
     if (g_frame_start.time_since_epoch().count() != 0) {
@@ -205,18 +349,23 @@ void ac6PresentTimingHook(PPCRegister& /*r31*/) {
     }
     g_frame_start = now;
 
-  // Log the first handful of pacing transitions.
+  // Log the first handful of pacing transitions (smooth pacing keyed negative
+  // so mode switches log distinctly from plain overrides).
+  const double log_key = pacing_target_hz > 0.0 ? -pacing_target_hz : override_hz;
   static double last_log_key = -0.5;
   static uint32_t transition_logs = 0;
-  if (unlock && override_hz != last_log_key && transition_logs < 32) {
+  if (unlock && log_key != last_log_key && transition_logs < 32) {
     ++transition_logs;
-    if (override_hz == 0.0) {
+    if (pacing_target_hz > 0.0) {
+      REXLOG_INFO("[AC6-VBLANK] pacing -> modern (present-paced, target {:.0f}fps)",
+                  pacing_target_hz);
+    } else if (override_hz == 0.0) {
       REXLOG_INFO("[AC6-VBLANK] pacing -> free-run (uncapped)");
     } else {
       REXLOG_INFO("[AC6-VBLANK] pacing -> {:.0f}Hz guest vblank", override_hz);
     }
   }
-  last_log_key = override_hz;
+  last_log_key = log_key;
 }
 
 void ac6CinematicTickHook(PPCRegister& /*r3*/) {

@@ -2582,6 +2582,12 @@ bool D3D12CommandProcessor::IssueSwapInternal(uint32_t frontbuffer_ptr,
         return true;
       });
 
+  if (refreshed) {
+    // A guest frame was actually delivered to the presenter - feed the
+    // delivery-paced present pacing (see GraphicsSystem::NotifyGuestPresent).
+    GraphicsSystem::NotifyGuestPresent();
+  }
+
   // End the frame even if did not present for any reason (the image refresher
   // was not called), to prevent leaking per-frame resources.
   REXGPU_DEBUG("IssueSwap: post-RefreshGuestOutput EndSubmission");

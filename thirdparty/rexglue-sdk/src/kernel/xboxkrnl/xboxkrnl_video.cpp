@@ -430,6 +430,11 @@ void VdSwap_entry(ppc_pvoid_t buffer_ptr,      // ptr into primary ringbuffer
   assert(width);
   assert(height);
 
+  // Modern present pacing (no-op unless enabled): block this guest thread on
+  // GPU delivery of the previous swap plus the target-rate limiter before the
+  // game may submit the next one. See GraphicsSystem::PaceGuestPresent.
+  rex::graphics::GraphicsSystem::PaceGuestPresent();
+
   namespace xenos = rex::graphics::xenos;
 
   xenos::xe_gpu_texture_fetch_t gpu_fetch;

@@ -109,6 +109,23 @@ class GraphicsSystem : public system::IGraphicsSystem {
   static void SetGuestVblankHzOverride(double hz);
   static double GetGuestVblankHzOverride();
 
+  // Modern present pacing: while target_hz > 0, PaceGuestPresent (called by
+  // VdSwap on the guest thread that submits swaps) blocks that thread until
+  // every previously issued swap has been delivered to the presenter (GPU
+  // backpressure, frame latency 1), then rate-limits it to target_hz with an
+  // absolute-deadline limiter. The game then runs at min(target, real GPU
+  // throughput) with uniform frame times - the modern game loop - instead of
+  // quantizing to vblank-grid sub-harmonics (60/30/20) when the GPU cannot
+  // hold the target. Combine with a free-running guest vblank so the vblank
+  // wait never gates. target_hz 0 = off. Process-wide, not per-instance.
+  static void SetGuestPresentPacing(double target_hz);
+  // Called by VdSwap on the swapping guest thread before it submits the next
+  // swap; blocks per SetGuestPresentPacing. No-op while pacing is off.
+  static void PaceGuestPresent();
+  // Called by the command processor whenever a guest frame is actually
+  // delivered to the presenter (guest output refreshed for a swap).
+  static void NotifyGuestPresent();
+
   bool Save(::rex::stream::ByteStream* stream);
   bool Restore(::rex::stream::ByteStream* stream);
 

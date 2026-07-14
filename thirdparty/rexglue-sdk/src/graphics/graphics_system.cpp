@@ -13,10 +13,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <utility>
 
 #include <rex/cvar.h>
@@ -112,6 +115,23 @@ __declspec(dllexport) uint32_t NvOptimusEnablement = 0x00000001;
 __declspec(dllexport) uint32_t AmdPowerXpressRequestHighPerformance = 1;
 }  // extern "C"
 #endif  // REX_PLATFORM_WIN32
+
+namespace {
+// Modern present pacing state (see SetGuestPresentPacing / PaceGuestPresent).
+// The counters pair the guest's swap submissions (VdSwap) with the frames the
+// command processor actually delivered to the presenter (NotifyGuestPresent).
+// PaceGuestPresent blocks the swapping guest thread on that pairing plus an
+// absolute-deadline frame limiter - GPU backpressure and a rate ceiling, the
+// modern game loop - instead of pacing the guest off the vblank grid.
+std::atomic<double> g_present_pacing_target_hz{0.0};
+std::atomic<uint64_t> g_guest_present_count{0};
+std::atomic<uint64_t> g_guest_swaps_issued{0};
+std::mutex g_present_pacing_mutex;
+std::condition_variable g_present_pacing_cv;
+// Guarded by g_present_pacing_mutex.
+std::chrono::steady_clock::time_point g_present_pacing_deadline{};
+uint64_t g_present_delivery_at_last_timeout = UINT64_MAX;
+}  // namespace
 
 GraphicsSystem::GraphicsSystem() : vsync_worker_running_(false) {}
 
@@ -421,6 +441,91 @@ void GraphicsSystem::SetGuestVblankHzOverride(double hz) {
 
 double GraphicsSystem::GetGuestVblankHzOverride() {
   return g_guest_vblank_hz_override.load(std::memory_order_relaxed);
+}
+
+void GraphicsSystem::SetGuestPresentPacing(double target_hz) {
+  g_present_pacing_target_hz.store(target_hz, std::memory_order_relaxed);
+}
+
+void GraphicsSystem::NotifyGuestPresent() {
+  g_guest_present_count.fetch_add(1, std::memory_order_relaxed);
+  // Empty critical section closes the race with PaceGuestPresent's predicate
+  // check-then-wait, so the notify below cannot fall between them and be lost.
+  { std::lock_guard<std::mutex> lock(g_present_pacing_mutex); }
+  g_present_pacing_cv.notify_all();
+}
+
+void GraphicsSystem::PaceGuestPresent() {
+  const double target_hz = g_present_pacing_target_hz.load(std::memory_order_relaxed);
+  if (target_hz <= 0.0) {
+    return;
+  }
+
+  // 1) Backpressure: before letting the game submit the next swap, wait until
+  // every previously issued swap has been delivered to the presenter (frame
+  // latency 1). This is what paces the game to the real GPU rate when it
+  // cannot hold target_hz - uniformly, with no vblank grid to alias against.
+  const uint64_t issued = g_guest_swaps_issued.load(std::memory_order_relaxed);
+  {
+    std::unique_lock<std::mutex> lock(g_present_pacing_mutex);
+    const auto pred = [&] {
+      return g_guest_present_count.load(std::memory_order_relaxed) >= issued;
+    };
+    const uint64_t delivered_now = g_guest_present_count.load(std::memory_order_relaxed);
+    // While delivery is known-stalled (swaps are not reaching the presenter -
+    // device loss, experimental swap paths), skip the wait entirely; the
+    // limiter below still runs, degrading this to a plain frame-rate cap.
+    const bool delivery_stalled = g_present_delivery_at_last_timeout != UINT64_MAX &&
+                                  delivered_now == g_present_delivery_at_last_timeout;
+    if (!delivery_stalled && !pred()) {
+      if (g_present_pacing_cv.wait_for(lock, std::chrono::milliseconds(100), pred)) {
+        g_present_delivery_at_last_timeout = UINT64_MAX;
+      } else {
+        // Timed out: forgive the whole backlog so one undelivered swap cannot
+        // park every future frame on this timeout.
+        g_present_delivery_at_last_timeout =
+            g_guest_present_count.load(std::memory_order_relaxed);
+        g_guest_swaps_issued.store(g_present_delivery_at_last_timeout,
+                                   std::memory_order_relaxed);
+      }
+    } else if (!delivery_stalled) {
+      g_present_delivery_at_last_timeout = UINT64_MAX;
+    }
+  }
+  g_guest_swaps_issued.fetch_add(1, std::memory_order_relaxed);
+
+  // 2) Ceiling: absolute-deadline limiter at target_hz. Deadlines advance by
+  // exactly one interval while the game keeps up (drift-free target rate) and
+  // re-anchor to now when it does not, so a slow stretch accrues no catch-up
+  // debt that would burst frames afterwards.
+  const auto interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(1.0 / target_hz));
+  auto now = std::chrono::steady_clock::now();
+  std::chrono::steady_clock::time_point wake;
+  {
+    std::lock_guard<std::mutex> lock(g_present_pacing_mutex);
+    if (g_present_pacing_deadline < now) {
+      g_present_pacing_deadline = now;
+    }
+    wake = g_present_pacing_deadline;
+    g_present_pacing_deadline = wake + interval;
+  }
+  // Coarse sleep to ~2ms short of the deadline, then spin the remainder for
+  // precision (OS sleep granularity is ~1ms and can overshoot).
+  while (true) {
+    now = std::chrono::steady_clock::now();
+    if (now >= wake) {
+      break;
+    }
+    const auto remaining = wake - now;
+    if (remaining > std::chrono::milliseconds(2)) {
+      rex::thread::Sleep(
+          std::chrono::duration_cast<std::chrono::milliseconds>(remaining) -
+          std::chrono::milliseconds(2));
+    } else {
+      std::this_thread::yield();
+    }
+  }
 }
 
 void GraphicsSystem::MarkVblank() {

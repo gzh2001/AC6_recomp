@@ -7,7 +7,6 @@
 #include <rex/logging.h>
 
 REXCVAR_DECLARE(bool, ac6_render_capture);
-REXCVAR_DECLARE(bool, ac6_timing_hooks_enabled);
 REXCVAR_DECLARE(bool, ac6_unlock_fps);
 REXCVAR_DECLARE(bool, ac6_native_graphics_enabled);
 REXCVAR_DECLARE(bool, ac6_force_safe_draw_resolution_scale);
@@ -218,7 +217,9 @@ std::unique_ptr<rex::ui::WindowedApp> Ac6recompAppCreate(rex::ui::WindowedAppCon
     if (!rex::cvar::HasNonDefaultValue("log_level")) {
         REXCVAR_SET(log_level, "debug");
     }
-    REXCVAR_SET(ac6_unlock_fps, false);
+    // Smooth 60fps unlock is on by default now (zero-config for players); the
+    // toml can still set ac6_unlock_fps=false for stock locked behaviour.
+    REXCVAR_SET(ac6_unlock_fps, true);
     ApplyAc6DefaultSettings();
     ApplyAc6HybridStartupSafetyOverrides();
     ApplyAc6FixDefaults();
