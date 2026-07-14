@@ -16,6 +16,7 @@
 
 #include <fmt/format.h>
 
+#include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/filesystem/devices/host_path_device.h>
 #include <rex/filesystem/devices/stfs_container_device.h>
@@ -25,6 +26,19 @@
 #include <rex/system/xam/content_manager.h>
 #include <rex/system/xfile.h>
 #include <rex/system/xobject.h>
+
+// Defined here (system layer) so both the global XamContentGetLicenseMask
+// (kernel layer, which links system PUBLIC) and the per-package license
+// override in OpenContent share this one knob. Default 0xFFFFFFFF = all bits,
+// the same as Xenia's license_mask = -1: a recomp has no online entitlement
+// check, so present content is owned. This also un-hides DLC colours/skins that
+// the STFS header only partially licensed (e.g. AC6's IDOLM@STER skins, whose
+// packs ship a partial per-colour bitmask). Set to 0 for strict header checks.
+REXCVAR_DEFINE_UINT32(license_mask, 0xFFFFFFFFu, "Kernel",
+                      "Content license mask returned by XamContentGetLicenseMask and used to "
+                      "override the license of installed DLC/marketplace content so every "
+                      "colour/skin is owned. Default 0xFFFFFFFF (all bits, = Xenia -1); set 0 "
+                      "for strict, header-accurate checks.");
 
 namespace rex {
 namespace system {
@@ -303,6 +317,17 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t 
   package->LoadPackageLicenseMask(ResolvePackageHeaderPath(
       data.file_name(), xuid, kernel_state_->title_id(), data.content_type));
   content_license = package->GetPackageLicense();
+  // A present package means the player owns it (a recomp has no online
+  // entitlement check). DLC (marketplace) packages frequently carry only a
+  // PARTIAL per-colour license bitmask in their STFS header - the game then
+  // hides every colour/skin whose bit is clear (this is what hid the missing
+  // IDOLM@STER skins: e.g. PACK09/AZUSA shipped 0x5f and shows, PACK02/MIKI
+  // shipped 0x0f and is hidden). Override marketplace content with the full
+  // configured mask so every colour in the pack is owned; other content types
+  // keep the zero-fallback. Set license_mask=0 in the toml for strict checks.
+  if (data.content_type == XContentType::kMarketplaceContent || content_license == 0) {
+    content_license = REXCVAR_GET(license_mask);
+  }
 
   {
     auto global_lock = global_critical_region_.Acquire();
