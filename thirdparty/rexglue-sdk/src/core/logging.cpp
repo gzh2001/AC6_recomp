@@ -38,6 +38,12 @@ REXCVAR_DEFINE_STRING(log_level, "info", "Log",
 
 REXCVAR_DEFINE_STRING(log_file, "", "Log", "Log file path (empty = auto sequential naming)");
 
+REXCVAR_DEFINE_BOOL(log_new_file_per_launch, true, "Log",
+                    "Start a fresh log each launch: delete the previous log_file (and its "
+                    "rotations) so it is replaced, not appended-to, and the files don't stack "
+                    "up. Only affects a fixed log_file name; the empty-log_file sequential path "
+                    "is already per-launch.");
+
 REXCVAR_DEFINE_BOOL(log_verbose, false, "Log", "Enable verbose logging (sets level to trace)")
     .debug_only();
 
@@ -68,6 +74,20 @@ bool g_early_initialized = false;
 bool g_initialized = false;
 std::mutex g_mutex;
 LogConfig g_config;
+
+// Delete the previous log (and its rotation siblings ac6recomp.1.log, .2.log, ...)
+// so each launch starts one FRESH log file, replacing the old one, instead of
+// appending across runs. Run once at logging init before the sink is created.
+static void RemovePreviousLog(const std::filesystem::path& path, int max_files) {
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
+  const std::filesystem::path dir = path.parent_path();
+  const std::string stem = path.stem().string();
+  const std::string ext = path.extension().string();
+  for (int i = 1; i <= max_files && i <= 64; ++i) {
+    std::filesystem::remove(dir / fmt::format("{}.{}{}", stem, i, ext), ec);
+  }
+}
 
 std::filesystem::path NextSequentialLogPath(const std::filesystem::path& logs_dir,
                                             std::string_view app_name) {
@@ -219,6 +239,11 @@ void InitLogging(const LogConfig& config) {
   std::string resolved_path;
   if (config.log_file) {
     resolved_path = config.log_file;
+    // Fresh single log each launch (QoL): delete the previous one first so a
+    // fixed log_file is replaced, not appended-to, and files don't stack up.
+    if (!resolved_path.empty() && REXCVAR_GET(log_new_file_per_launch)) {
+      RemovePreviousLog(resolved_path, REXCVAR_GET(log_max_files));
+    }
   } else if (!config.app_name.empty()) {
     auto log_dir = config.log_dir.empty() ? std::filesystem::current_path() / "logs"
                                           : std::filesystem::path(config.log_dir);
