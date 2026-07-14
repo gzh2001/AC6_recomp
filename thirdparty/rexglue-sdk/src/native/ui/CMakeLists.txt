@@ -17,6 +17,7 @@ set(REXUI_CORE_SOURCES
 
 set(REXUI_OVERLAY_SOURCES
     ${REXGLUE_ROOT}/src/ui/overlay/debug_overlay.cpp
+    ${REXGLUE_ROOT}/src/ui/overlay/build_stamp_overlay.cpp
     ${REXGLUE_ROOT}/src/ui/overlay/console_overlay.cpp
     ${REXGLUE_ROOT}/src/ui/overlay/settings_overlay.cpp
 )

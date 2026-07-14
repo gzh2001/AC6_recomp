@@ -19,6 +19,7 @@ set(REXUI_CORE_SOURCES
 # Optional overlay dialogs
 set(REXUI_OVERLAY_SOURCES
     overlay/debug_overlay.cpp
+    overlay/build_stamp_overlay.cpp
     overlay/console_overlay.cpp
     overlay/settings_overlay.cpp
 )

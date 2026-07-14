@@ -223,6 +223,7 @@ bool ReXApp::OnInitialize() {
         imgui_drawer_->SetPresenterAndImmediateDrawer(presenter, immediate_drawer_.get());
         // Built-in overlays
         debug_overlay_ = std::make_unique<ui::DebugOverlayDialog>(imgui_drawer_.get());
+        build_stamp_overlay_ = std::make_unique<ui::BuildStampOverlay>(imgui_drawer_.get());
         console_overlay_ = std::make_unique<ui::ConsoleDialog>(imgui_drawer_.get(), log_sink_);
         settings_overlay_ = std::make_unique<ui::SettingsDialog>(
             imgui_drawer_.get(), config_path);
@@ -309,6 +310,7 @@ void ReXApp::OnDestroy() {
   // ImGui cleanup (reverse of setup)
   settings_overlay_.reset();
   console_overlay_.reset();
+  build_stamp_overlay_.reset();
   debug_overlay_.reset();
   if (imgui_drawer_) {
     imgui_drawer_->SetPresenterAndImmediateDrawer(nullptr, nullptr);

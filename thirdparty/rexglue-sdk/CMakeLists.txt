@@ -136,6 +136,17 @@ add_compile_definitions(REXGLUE_BUILD_CONFIG="$<CONFIG>")
 # Generate version header -- must run after REX_PLATFORM is set
 # Timestamp is set at configure time -- intentionally not updated on every rebuild
 string(TIMESTAMP REXGLUE_BUILD_TIMESTAMP "%Y%m%d_%H%M")
+# Short git commit hash of the containing project (re-run cmake to refresh it).
+execute_process(
+    COMMAND git rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE REXGLUE_GIT_HASH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT REXGLUE_GIT_HASH)
+    set(REXGLUE_GIT_HASH "nogit")
+endif()
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/rex/version.h.in
     ${CMAKE_CURRENT_BINARY_DIR}/include/rex/version.h

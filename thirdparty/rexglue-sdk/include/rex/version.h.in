@@ -8,6 +8,7 @@
 
 #define REXGLUE_BUILD_PLATFORM "@REX_PLATFORM@"
 #define REXGLUE_BUILD_TIMESTAMP "@REXGLUE_BUILD_TIMESTAMP@"
+#define REXGLUE_GIT_HASH "@REXGLUE_GIT_HASH@"
 
 // Requires REXGLUE_BUILD_CONFIG compile definition
 // Title: "[rexglue-v0.7.1-Release]"
@@ -18,3 +19,7 @@
 #define REXGLUE_BUILD_STAMP \
   "build: rexglue-v" REXGLUE_VERSION_STRING "-" REXGLUE_BUILD_PLATFORM \
   "-" REXGLUE_BUILD_CONFIG "@" REXGLUE_BUILD_TIMESTAMP
+
+// Watermark: "rexglue-v0.7.1-Release @5120188b" (short git commit hash)
+#define REXGLUE_BUILD_HASH_STAMP \
+  "rexglue-v" REXGLUE_VERSION_STRING "-" REXGLUE_BUILD_CONFIG " @" REXGLUE_GIT_HASH
