@@ -10,6 +10,7 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/platform.h>
+#include <rex/ui/present_stats.h>
 #include <native/ui/presenter.h>
 #include <native/ui/window.h>
 
@@ -27,6 +28,16 @@ REXCVAR_DEFINE_BOOL(host_present_from_non_ui_thread, true, "UI/Presenter",
 
 REXCVAR_DEFINE_BOOL(present_letterbox, true, "UI/Presenter",
                     "Enable letterboxing for non-native aspect ratios");
+
+namespace rex::ui {
+namespace {
+std::atomic<double> g_last_present_wait_ms{0.0};
+}  // namespace
+double GetLastPresentWaitMs() { return g_last_present_wait_ms.load(std::memory_order_relaxed); }
+void SetLastPresentWaitMs(double ms) {
+  g_last_present_wait_ms.store(ms, std::memory_order_relaxed);
+}
+}  // namespace rex::ui
 
 REXCVAR_DEFINE_INT32(present_safe_area_x, 90, "UI/Presenter",
                      "Horizontal safe area percentage (0-100)")

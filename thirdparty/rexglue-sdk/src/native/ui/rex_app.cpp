@@ -43,6 +43,13 @@
 REXCVAR_DEFINE_STRING(user_data_root, "", "Runtime", "Override user data path");
 REXCVAR_DEFINE_STRING(update_data_root, "", "Runtime", "Override update data path");
 
+REXCVAR_DEFINE_BOOL(use_shader_disk_cache, true, "GPU",
+                    "Pre-compile the game's GPU pipelines from a persistent on-disk cache at "
+                    "launch (during load) and record new ones, so pipelines do not compile "
+                    "on-demand mid-gameplay - the first-encounter stutter (e.g. at mission "
+                    "start). First run of a scene records the pipelines; later runs load them. "
+                    "Cache lives in ./cache/shaders/.");
+
 namespace rex {
 
 // --- ReXApp ---
@@ -216,6 +223,7 @@ bool ReXApp::OnInitialize() {
         imgui_drawer_->SetPresenterAndImmediateDrawer(presenter, immediate_drawer_.get());
         // Built-in overlays
         debug_overlay_ = std::make_unique<ui::DebugOverlayDialog>(imgui_drawer_.get());
+        build_stamp_overlay_ = std::make_unique<ui::BuildStampOverlay>(imgui_drawer_.get());
         console_overlay_ = std::make_unique<ui::ConsoleDialog>(imgui_drawer_.get(), log_sink_);
         settings_overlay_ = std::make_unique<ui::SettingsDialog>(
             imgui_drawer_.get(), config_path);
@@ -244,6 +252,29 @@ bool ReXApp::OnInitialize() {
       REXLOG_ERROR("Failed to launch module");
       app_context().QuitFromUIThread();
       return;
+    }
+
+    // Wire up the GPU pipeline disk cache. The backend has the whole shader
+    // storage system (record + pre-create), but nothing triggers it otherwise,
+    // so every run compiles pipelines on demand during gameplay - the
+    // first-encounter stutter (mission start). Init here, now that the title is
+    // loaded (title_id known) and the GPU is set up: blocking, so previously
+    // recorded pipelines are pre-created during the initial load rather than
+    // mid-play, and new ones are recorded for next time.
+    if (REXCVAR_GET(use_shader_disk_cache) && runtime_->graphics_system() &&
+        runtime_->kernel_state()) {
+      uint32_t shader_cache_title_id = runtime_->kernel_state()->title_id();
+      if (shader_cache_title_id != 0) {
+        std::filesystem::path cache_root = std::filesystem::current_path() / "cache";
+        REXLOG_INFO("Shader disk cache: initializing for title {:08X} at {}",
+                    shader_cache_title_id, rex::path_to_utf8(cache_root));
+        // graphics_system() returns the IGraphicsSystem interface; InitializeShaderStorage
+        // lives on the concrete GraphicsSystem (always a rex::graphics::GraphicsSystem here).
+        static_cast<rex::graphics::GraphicsSystem*>(runtime_->graphics_system())
+            ->InitializeShaderStorage(cache_root, shader_cache_title_id, true);
+      } else {
+        REXLOG_WARN("Shader disk cache: title_id unavailable, skipping");
+      }
     }
 
     module_thread_ = std::thread([this, main_thread = std::move(main_thread)]() mutable {
@@ -279,6 +310,7 @@ void ReXApp::OnDestroy() {
   // ImGui cleanup (reverse of setup)
   settings_overlay_.reset();
   console_overlay_.reset();
+  build_stamp_overlay_.reset();
   debug_overlay_.reset();
   if (imgui_drawer_) {
     imgui_drawer_->SetPresenterAndImmediateDrawer(nullptr, nullptr);

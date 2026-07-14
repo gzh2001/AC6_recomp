@@ -6,7 +6,6 @@
 #include <rex/ppc/types.h>
 
 REXCVAR_DECLARE(bool, ac6_unlock_fps);
-REXCVAR_DECLARE(bool, ac6_timing_hooks_enabled);
 REXCVAR_DECLARE(bool, ac6_cutscene_clamp);
 
 namespace ac6 {
@@ -23,6 +22,12 @@ FrameStats GetFrameStats();
 // (unlock cvars on and no cutscene clamp). The physics force-step rescale keys
 // off this so it stays in lockstep with the frame-delta hooks.
 bool TimingHooksActive();
+
+// ac6_min_sim_fps clamped to its supported range [10, 30]. Single source for
+// the low-fps floor shared by the frame-delta clamp (ac6DeltaPrecisionHook)
+// and the physics step cap (StepRatio) - the two must saturate at the same
+// framerate or the dynamics desync from the kinematics below 30fps.
+double ClampedMinSimFps();
 
 // True while an in-engine cutscene (NU::FW::IngameCinematics, driven by
 // CAce6DemoManager::Exec) has ticked within the last decay window. Used by the

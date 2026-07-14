@@ -1029,7 +1029,9 @@ bool GetResolveInfo(const RegisterFile& regs, const memory::Memory& memory,
   }
 
   if (x0 >= x1 || y0 >= y1) {
-    REXGPU_WARN(
+    // Empty resolve region after clamp is normal (many guest resolves scissor to
+    // nothing); debug-level so it doesn't flood the log every frame.
+    REXGPU_DEBUG(
         "Skipping empty resolve region after clamp/alignment: "
         "scissored {} <= x < {}, {} <= y < {}; final {} <= x < {}, {} <= y < {}; "
         "scissor {} <= x < {}, {} <= y < {}; surface_pitch={}",

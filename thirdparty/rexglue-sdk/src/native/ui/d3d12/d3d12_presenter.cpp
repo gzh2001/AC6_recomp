@@ -10,6 +10,7 @@
  */
 
 #include <algorithm>
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <memory>
@@ -19,6 +20,7 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/math.h>
+#include <rex/ui/present_stats.h>
 #include <native/ui/d3d12/d3d12_presenter.h>
 #include <native/ui/d3d12/d3d12_provider.h>
 #include <native/ui/d3d12/d3d12_util.h>
@@ -585,8 +587,12 @@ void D3D12Presenter::PaintContext::DestroySwapChain() {
 
 Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(bool execute_ui_drawers) {
   if (paint_context_.HasFrameLatencyWaitableObject()) {
+    auto wait_begin = std::chrono::steady_clock::now();
     DWORD wait_result =
         WaitForSingleObjectEx(paint_context_.swap_chain_latency_waitable_object, 1000, FALSE);
+    ui::SetLastPresentWaitMs(
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - wait_begin)
+            .count());
     if (wait_result == WAIT_FAILED) {
       REXLOG_WARN("D3D12Presenter: Waiting for the swap chain frame latency object failed");
     } else if (wait_result == WAIT_TIMEOUT) {

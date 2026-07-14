@@ -2322,7 +2322,7 @@ bool D3D12CommandProcessor::IssueSwapInternal(uint32_t frontbuffer_ptr,
         // frame (will close the frame after this anyway, so can't write
         // multiple times per frame).
         
-        REXGPU_ERROR("RefreshGuestOutput: checkpoint 1 (gamma block start)");
+        REXGPU_DEBUG("RefreshGuestOutput: checkpoint 1 (gamma block start)");
         if (!(use_pwl_gamma_ramp ? gamma_ramp_pwl_up_to_date_
                                  : gamma_ramp_256_entry_table_up_to_date_)) {
           uint32_t gamma_ramp_offset_bytes = use_pwl_gamma_ramp ? 256 * 4 : 0;
@@ -2377,7 +2377,7 @@ bool D3D12CommandProcessor::IssueSwapInternal(uint32_t frontbuffer_ptr,
                               : gamma_ramp_256_entry_table_up_to_date_) = true;
         }
 
-        REXGPU_ERROR("RefreshGuestOutput: checkpoint 2 (descriptor heap allocation)");
+        REXGPU_DEBUG("RefreshGuestOutput: checkpoint 2 (descriptor heap allocation)");
         // Destination, source, and if bindful, gamma ramp.
         ui::d3d12::util::DescriptorCpuGpuHandlePair apply_gamma_descriptors[3];
         ui::d3d12::util::DescriptorCpuGpuHandlePair apply_gamma_descriptor_gamma_ramp;
@@ -2423,16 +2423,16 @@ bool D3D12CommandProcessor::IssueSwapInternal(uint32_t frontbuffer_ptr,
         apply_gamma_dest_uav_desc.Texture2D.MipSlice = 0;
         apply_gamma_dest_uav_desc.Texture2D.PlaneSlice = 0;
         
-        REXGPU_ERROR("RefreshGuestOutput: checkpoint 3 (CreateUAV, CreateSRV)");
-        REXGPU_ERROR("RefreshGuestOutput: checkpoint 3.1 - CreateUAV");
+        REXGPU_DEBUG("RefreshGuestOutput: checkpoint 3 (CreateUAV, CreateSRV)");
+        REXGPU_DEBUG("RefreshGuestOutput: checkpoint 3.1 - CreateUAV");
         device->CreateUnorderedAccessView(apply_gamma_dest, nullptr, &apply_gamma_dest_uav_desc,
                                           apply_gamma_descriptors[0].first);
 
-        REXGPU_ERROR("RefreshGuestOutput: checkpoint 3.2 - CreateSRV");
+        REXGPU_DEBUG("RefreshGuestOutput: checkpoint 3.2 - CreateSRV");
         device->CreateShaderResourceView(swap_texture_resource, &swap_texture_srv_desc,
                                          apply_gamma_descriptors[1].first);
 
-        REXGPU_ERROR("RefreshGuestOutput: checkpoint 3.3 - PushTransitionBarrier");
+        REXGPU_DEBUG("RefreshGuestOutput: checkpoint 3.3 - PushTransitionBarrier");
         if (using_native_swap_texture) {
           PushTransitionBarrier(swap_texture_resource,
                                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
@@ -2442,10 +2442,10 @@ bool D3D12CommandProcessor::IssueSwapInternal(uint32_t frontbuffer_ptr,
                               D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         gamma_ramp_buffer_state_ = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 
-        REXGPU_ERROR("RefreshGuestOutput: checkpoint 3.4 - D3DSetComputeRootSignature");
+        REXGPU_DEBUG("RefreshGuestOutput: checkpoint 3.4 - D3DSetComputeRootSignature");
         deferred_command_list_.D3DSetComputeRootSignature(apply_gamma_root_signature_.Get());
         
-        REXGPU_ERROR("RefreshGuestOutput: checkpoint 3.5 - ApplyGammaConstants");
+        REXGPU_DEBUG("RefreshGuestOutput: checkpoint 3.5 - ApplyGammaConstants");
         ApplyGammaConstants apply_gamma_constants;
         apply_gamma_constants.size[0] = guest_output_width;
         apply_gamma_constants.size[1] = guest_output_height;
@@ -2453,7 +2453,7 @@ bool D3D12CommandProcessor::IssueSwapInternal(uint32_t frontbuffer_ptr,
             UINT(ApplyGammaRootParameter::kConstants),
             sizeof(apply_gamma_constants) / sizeof(uint32_t), &apply_gamma_constants, 0);
             
-        REXGPU_ERROR("RefreshGuestOutput: checkpoint 3.6 - RootDescriptorTable dest/src/ramp");
+        REXGPU_DEBUG("RefreshGuestOutput: checkpoint 3.6 - RootDescriptorTable dest/src/ramp");
         deferred_command_list_.D3DSetComputeRootDescriptorTable(
             UINT(ApplyGammaRootParameter::kDestination), apply_gamma_descriptors[0].second);
         deferred_command_list_.D3DSetComputeRootDescriptorTable(
@@ -2461,7 +2461,7 @@ bool D3D12CommandProcessor::IssueSwapInternal(uint32_t frontbuffer_ptr,
         deferred_command_list_.D3DSetComputeRootDescriptorTable(
             UINT(ApplyGammaRootParameter::kRamp), apply_gamma_descriptor_gamma_ramp.second);
             
-        REXGPU_ERROR("RefreshGuestOutput: checkpoint 3.7 - Select pipeline (pwl={} fxaa={})", use_pwl_gamma_ramp, use_fxaa);
+        REXGPU_DEBUG("RefreshGuestOutput: checkpoint 3.7 - Select pipeline (pwl={} fxaa={})", use_pwl_gamma_ramp, use_fxaa);
         ID3D12PipelineState* apply_gamma_pipeline;
         if (use_pwl_gamma_ramp) {
           apply_gamma_pipeline = use_fxaa ? apply_gamma_pwl_fxaa_luma_pipeline_.Get()
@@ -2475,17 +2475,17 @@ bool D3D12CommandProcessor::IssueSwapInternal(uint32_t frontbuffer_ptr,
           REXGPU_ERROR("RefreshGuestOutput: CRITICAL: apply_gamma_pipeline IS NULL!");
         }
         
-        REXGPU_ERROR("RefreshGuestOutput: checkpoint 3.8 - SetExternalPipeline (ptr={:016X})", (uint64_t)apply_gamma_pipeline);
+        REXGPU_DEBUG("RefreshGuestOutput: checkpoint 3.8 - SetExternalPipeline (ptr={:016X})", (uint64_t)apply_gamma_pipeline);
         SetExternalPipeline(apply_gamma_pipeline);
         
-        REXGPU_ERROR("RefreshGuestOutput: checkpoint 3.9 - SubmitBarriers");
+        REXGPU_DEBUG("RefreshGuestOutput: checkpoint 3.9 - SubmitBarriers");
         SubmitBarriers();
         
-        REXGPU_ERROR("RefreshGuestOutput: checkpoint 3.10 - D3DDispatch");
+        REXGPU_DEBUG("RefreshGuestOutput: checkpoint 3.10 - D3DDispatch");
         uint32_t group_count_x = (guest_output_width + 15) / 16;
         uint32_t group_count_y = (guest_output_height + 7) / 8;
         deferred_command_list_.D3DDispatch(group_count_x, group_count_y, 1);
-        REXGPU_ERROR("RefreshGuestOutput: checkpoint 4 (post-dispatch)");
+        REXGPU_DEBUG("RefreshGuestOutput: checkpoint 4 (post-dispatch)");
 
         // Apply FXAA.
         if (use_fxaa) {
@@ -2558,7 +2558,7 @@ bool D3D12CommandProcessor::IssueSwapInternal(uint32_t frontbuffer_ptr,
         } else {
           if (apply_gamma_dest_initial_state !=
               ui::d3d12::D3D12Presenter::kGuestOutputInternalState) {
-            REXGPU_ERROR("RefreshGuestOutput: checkpoint 5 - WARNING: unexpected apply_gamma_dest_initial_state {:08X}, expected {:08X}",
+            REXGPU_DEBUG("RefreshGuestOutput: checkpoint 5 - WARNING: unexpected apply_gamma_dest_initial_state {:08X}, expected {:08X}",
                          uint32_t(apply_gamma_dest_initial_state),
                          uint32_t(ui::d3d12::D3D12Presenter::kGuestOutputInternalState));
           }
@@ -2574,19 +2574,25 @@ bool D3D12CommandProcessor::IssueSwapInternal(uint32_t frontbuffer_ptr,
                                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         }
-        REXGPU_ERROR("RefreshGuestOutput: checkpoint 6 (SubmitBarriers pre-EndSubmission)");
+        REXGPU_DEBUG("RefreshGuestOutput: checkpoint 6 (SubmitBarriers pre-EndSubmission)");
         SubmitBarriers();
-        REXGPU_ERROR("RefreshGuestOutput: checkpoint 7 (EndSubmission)");
+        REXGPU_DEBUG("RefreshGuestOutput: checkpoint 7 (EndSubmission)");
         EndSubmission(true);
-        REXGPU_ERROR("RefreshGuestOutput: checkpoint 8 (return true)");
+        REXGPU_DEBUG("RefreshGuestOutput: checkpoint 8 (return true)");
         return true;
       });
 
+  if (refreshed) {
+    // A guest frame was actually delivered to the presenter - feed the
+    // delivery-paced present pacing (see GraphicsSystem::NotifyGuestPresent).
+    GraphicsSystem::NotifyGuestPresent();
+  }
+
   // End the frame even if did not present for any reason (the image refresher
   // was not called), to prevent leaking per-frame resources.
-  REXGPU_ERROR("IssueSwap: post-RefreshGuestOutput EndSubmission");
+  REXGPU_DEBUG("IssueSwap: post-RefreshGuestOutput EndSubmission");
   EndSubmission(true);
-  REXGPU_ERROR("IssueSwap: complete");
+  REXGPU_DEBUG("IssueSwap: complete");
   return refreshed;
 }
 
