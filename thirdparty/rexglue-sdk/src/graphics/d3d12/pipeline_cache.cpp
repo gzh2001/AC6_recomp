@@ -1509,10 +1509,10 @@ bool PipelineCache::GetCurrentStateDescription(
         /* 12 */ PipelineBlendFactor::kBlendFactor,
         // ONE_MINUS_CONSTANT_COLOR
         /* 13 */ PipelineBlendFactor::kInvBlendFactor,
-        // CONSTANT_ALPHA
-        /* 14 */ PipelineBlendFactor::kBlendFactor,
-        // ONE_MINUS_CONSTANT_ALPHA
-        /* 15 */ PipelineBlendFactor::kInvBlendFactor,
+        // CONSTANT_ALPHA - uses the constant's ALPHA, not RGB.
+        /* 14 */ PipelineBlendFactor::kBlendFactorAlpha,
+        // ONE_MINUS_CONSTANT_ALPHA - uses 1 - constant ALPHA, not 1 - RGB.
+        /* 15 */ PipelineBlendFactor::kInvBlendFactorAlpha,
         /* 16 */ PipelineBlendFactor::kSrcAlphaSat,
     };
     // Like kBlendFactorMap, but with color modes changed to alpha. Some
@@ -1534,10 +1534,10 @@ bool PipelineCache::GetCurrentStateDescription(
         /* 12 */ PipelineBlendFactor::kBlendFactor,
         // ONE_MINUS_CONSTANT_COLOR
         /* 13 */ PipelineBlendFactor::kInvBlendFactor,
-        // CONSTANT_ALPHA
-        /* 14 */ PipelineBlendFactor::kBlendFactor,
-        // ONE_MINUS_CONSTANT_ALPHA
-        /* 15 */ PipelineBlendFactor::kInvBlendFactor,
+        // CONSTANT_ALPHA - uses the constant's ALPHA, not RGB.
+        /* 14 */ PipelineBlendFactor::kBlendFactorAlpha,
+        // ONE_MINUS_CONSTANT_ALPHA - uses 1 - constant ALPHA, not 1 - RGB.
+        /* 15 */ PipelineBlendFactor::kInvBlendFactorAlpha,
         /* 16 */ PipelineBlendFactor::kSrcAlphaSat,
     };
     // While it's okay to specify fewer render targets in the pipeline state
@@ -2981,6 +2981,11 @@ ID3D12PipelineState* PipelineCache::CreateD3D12Pipeline(
         D3D12_BLEND_DEST_ALPHA,    D3D12_BLEND_INV_DEST_ALPHA,
         D3D12_BLEND_BLEND_FACTOR,  D3D12_BLEND_INV_BLEND_FACTOR,
         D3D12_BLEND_SRC_ALPHA_SAT,
+        // kBlendFactorAlpha / kInvBlendFactorAlpha - the constant's alpha
+        // broadcast to RGB, for the Xenos CONSTANT_ALPHA / ONE_MINUS_CONSTANT_ALPHA
+        // factors (previously collapsed onto the RGB BLEND_FACTOR, which darkened
+        // shadows the wrong way - they brightened instead of subtracting).
+        D3D12_BLEND_ALPHA_FACTOR,  D3D12_BLEND_INV_ALPHA_FACTOR,
     };
     // 8 entries for safety since 3 bits from the guest are passed directly.
     static const D3D12_BLEND_OP kBlendOpMap[] = {
