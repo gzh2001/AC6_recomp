@@ -165,6 +165,12 @@ class PipelineCache {
     kBlendFactor,
     kInvBlendFactor,
     kSrcAlphaSat,
+    // Constant blend factor using the constant's ALPHA broadcast to RGB (D3D12
+    // ALPHA_FACTOR / INV_ALPHA_FACTOR). Distinct from kBlendFactor, which uses
+    // the constant's RGB - the Xenos CONSTANT_ALPHA / ONE_MINUS_CONSTANT_ALPHA
+    // factors map here, not onto the RGB ones.
+    kBlendFactorAlpha,
+    kInvBlendFactorAlpha,
   };
 
   // Update PipelineDescription::kVersion if anything is changed!
@@ -219,7 +225,7 @@ class PipelineCache {
 
     PipelineRenderTarget render_targets[xenos::kMaxColorRenderTargets];
 
-    static constexpr uint32_t kVersion = 0x20210425;
+    static constexpr uint32_t kVersion = 0x20260715;
   });
 
   REXPACKEDSTRUCT(PipelineStoredDescription, {
