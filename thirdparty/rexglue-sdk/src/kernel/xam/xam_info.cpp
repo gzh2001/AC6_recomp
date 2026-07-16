@@ -3,6 +3,7 @@
  * Copyright (c) 2026 Tom Clay. All rights reserved.
  */
 
+#include <rex/cvar.h>
 #include <rex/kernel/xam/module.h>
 #include <rex/kernel/xam/private.h>
 #include <rex/logging.h>
@@ -21,6 +22,25 @@
 
 #include <fmt/format.h>
 #include <fmt/xchar.h>
+
+// Console language + region reported to the game. XGetLanguage is what AC6 (and
+// most titles) localise off, and XGetGameRegion drives region checks / locale.
+// `user_language` is the single source of truth (defined at file scope in
+// xam_user.cpp; also used by XamUser and XConfig kXConfigUserLanguage), so all
+// three now agree. Defined at file scope to match the cvar storage linkage.
+//
+// `game_region` defaults to 0 = auto-derived from user_language. The game's
+// locale routine (sub_821BABB8) only honours USER_LANGUAGE when the region is
+// NTSC-J-capable ({0x101, 0x102, 0x1FC, 0x1FF}), so Japanese needs 0x1FF (this
+// (USA, Japan) release's real XEX region). But an NTSC-J region also switches
+// region-keyed content on its own even with English selected, so it is only
+// reported when Japanese is actually requested; everything else keeps the
+// long-standing region-free 0xFFFF.
+REXCVAR_DECLARE(uint32_t, user_language);
+REXCVAR_DEFINE_UINT32(game_region, 0u, "Kernel",
+                      "Console region reported by XGetGameRegion (XEX_REGION mask). "
+                      "0 = auto: 0x1FF (NTSC-U + NTSC-J Japan) when user_language is "
+                      "Japanese, else 0xFFFF (region-free).");
 
 namespace rex {
 namespace kernel {
@@ -175,7 +195,13 @@ ppc_u32_result_t XGetAVPack_entry() {
 }
 
 uint32_t xeXGetGameRegion() {
-  return 0xFFFFu;
+  const uint32_t configured = REXCVAR_GET(game_region);
+  if (configured != 0) {
+    return configured;
+  }
+  // Auto: report the disc's real NTSC-J-capable region only when Japanese is
+  // requested (see the cvar comment for why not unconditionally).
+  return REXCVAR_GET(user_language) == uint32_t(XLanguage::kJapanese) ? 0x1FFu : 0xFFFFu;
 }
 
 ppc_u32_result_t XGetGameRegion_entry() {
@@ -183,19 +209,16 @@ ppc_u32_result_t XGetGameRegion_entry() {
 }
 
 ppc_u32_result_t XGetLanguage_entry() {
-  auto desired_language = XLanguage::kEnglish;
-
-  // Switch the language based on game region.
-  // TODO(benvanik): pull from xex header.
-  uint32_t game_region = XEX_REGION_NTSCU;
-  if (game_region & XEX_REGION_NTSCU) {
-    desired_language = XLanguage::kEnglish;
-  } else if (game_region & XEX_REGION_NTSCJ) {
-    desired_language = XLanguage::kJapanese;
+  // Report the configured console language. This is the value AC6 (and most
+  // titles) localise off, so it must track the same user_language cvar that
+  // XamUser / XConfig already expose - previously it was hardcoded to English,
+  // which left the game's other-language voice/text (e.g. voicepack_jpn.bin)
+  // unreachable. Fall back to English if the cvar is left unset (0).
+  uint32_t language = REXCVAR_GET(user_language);
+  if (language == 0) {
+    language = uint32_t(XLanguage::kEnglish);
   }
-  // Add more overrides?
-
-  return uint32_t(desired_language);
+  return language;
 }
 
 ppc_u32_result_t XamGetCurrentTitleId_entry() {
