@@ -1,0 +1,625 @@
+name: Build AC6Recomp Windows RelWithDebInfo
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch, tag or commit to build
+        required: true
+        default: main
+        type: string
+
+      iso_url:
+        description: Direct HTTPS URL of the AC6 ISO
+        required: true
+        type: string
+
+      iso_sha256:
+        description: SHA-256 of the ISO
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ac6recomp-win-relwithdebinfo-${{ inputs.source_ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: win-amd64-relwithdebinfo
+
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+      - ac6-builder
+
+    timeout-minutes: 240
+
+    defaults:
+      run:
+        shell: pwsh
+
+    env:
+      ISO_URL: ${{ inputs.iso_url }}
+      EXPECTED_ISO_SHA256: ${{ inputs.iso_sha256 }}
+
+      CMAKE_PRESET: win-amd64-relwithdebinfo
+      PRIVATE_INPUT_DIR: private-input
+      ISO_LOCAL_PATH: private-input/ac6.iso
+      ASSETS_DIR: assets
+      ARTIFACT_DIR: artifact/AC6Recomp
+
+    steps:
+      # ------------------------------------------------------------
+      # 1. Checkout
+      # ------------------------------------------------------------
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 1
+          submodules: false
+          clean: true
+
+      # ------------------------------------------------------------
+      # 2. Verify workflow inputs
+      # ------------------------------------------------------------
+
+      - name: Verify configuration
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if ([string]::IsNullOrWhiteSpace($env:ISO_URL)) {
+              throw "ISO URL was not provided."
+          }
+
+          if ($env:ISO_URL -notmatch '^https://') {
+              throw "ISO URL must use HTTPS."
+          }
+
+          if ([string]::IsNullOrWhiteSpace(
+              $env:EXPECTED_ISO_SHA256
+          )) {
+              throw "ISO SHA-256 was not provided."
+          }
+
+          $normalizedHash = (
+              $env:EXPECTED_ISO_SHA256 -replace '\s', ''
+          )
+
+          if ($normalizedHash -notmatch '^[0-9a-fA-F]{64}$') {
+              throw @"
+          ISO SHA-256 must contain exactly 64 hexadecimal characters.
+          "@
+          }
+
+          Write-Host "Source ref   : ${{ inputs.source_ref }}"
+          Write-Host "CMake preset : $env:CMAKE_PRESET"
+          Write-Host "ISO URL      : configured"
+          Write-Host "ISO SHA-256  : $normalizedHash"
+
+      # ------------------------------------------------------------
+      # 3. Verify runner toolchain
+      # ------------------------------------------------------------
+
+      - name: Verify toolchain
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $requiredCommands = @(
+              'git',
+              'cmake',
+              'ninja',
+              'clang',
+              'clang++',
+              'xdvdfs',
+              'curl.exe'
+          )
+
+          foreach ($command in $requiredCommands) {
+              if (-not (
+                  Get-Command $command -ErrorAction SilentlyContinue
+              )) {
+                  throw "Required command is missing: $command"
+              }
+          }
+
+          git --version
+          cmake --version
+          ninja --version
+          clang --version
+          clang++ --version
+          xdvdfs --version
+          curl.exe --version
+
+          $cmakeVersionLine = (
+              cmake --version |
+              Select-Object -First 1
+          )
+
+          if ($cmakeVersionLine -notmatch 'cmake version (\d+)\.(\d+)') {
+              throw "Unable to parse CMake version: $cmakeVersionLine"
+          }
+
+          $major = [int]$Matches[1]
+          $minor = [int]$Matches[2]
+
+          if (
+              $major -lt 3 -or
+              ($major -eq 3 -and $minor -lt 25)
+          ) {
+              throw "CMake 3.25 or newer is required."
+          }
+
+      # ------------------------------------------------------------
+      # 4. Clean previous workspace data
+      # ------------------------------------------------------------
+
+      - name: Clean workspace
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $directories = @(
+              $env:PRIVATE_INPUT_DIR,
+              $env:ASSETS_DIR,
+              'assets-normalized',
+              'generated',
+              'out',
+              'artifact'
+          )
+
+          foreach ($directory in $directories) {
+              if (Test-Path -LiteralPath $directory) {
+                  Write-Host "Removing: $directory"
+
+                  Remove-Item `
+                      -LiteralPath $directory `
+                      -Recurse `
+                      -Force
+              }
+          }
+
+          New-Item `
+              -ItemType Directory `
+              -Path $env:PRIVATE_INPUT_DIR `
+              -Force |
+              Out-Null
+
+      # ------------------------------------------------------------
+      # 5. Download ISO
+      # ------------------------------------------------------------
+
+      - name: Download ISO
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          curl.exe `
+              --fail `
+              --location `
+              --retry 5 `
+              --retry-all-errors `
+              --retry-delay 10 `
+              --connect-timeout 30 `
+              --max-time 14400 `
+              --output "$env:ISO_LOCAL_PATH" `
+              "$env:ISO_URL"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "ISO download failed with exit code $LASTEXITCODE."
+          }
+
+          if (-not (
+              Test-Path `
+                  -LiteralPath $env:ISO_LOCAL_PATH `
+                  -PathType Leaf
+          )) {
+              throw "Downloaded ISO was not found."
+          }
+
+          $iso = Get-Item -LiteralPath $env:ISO_LOCAL_PATH
+
+          if ($iso.Length -eq 0) {
+              throw "Downloaded ISO is empty."
+          }
+
+          $sizeGiB = [Math]::Round(
+              $iso.Length / 1GB,
+              3
+          )
+
+          Write-Host "Downloaded ISO size: $sizeGiB GiB"
+
+      # ------------------------------------------------------------
+      # 6. Verify ISO SHA-256
+      # ------------------------------------------------------------
+
+      - name: Verify ISO SHA-256
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $expected = (
+              $env:EXPECTED_ISO_SHA256 -replace '\s', ''
+          ).ToUpperInvariant()
+
+          $actual = (
+              Get-FileHash `
+                  -LiteralPath $env:ISO_LOCAL_PATH `
+                  -Algorithm SHA256
+          ).Hash.ToUpperInvariant()
+
+          Write-Host "Expected SHA-256: $expected"
+          Write-Host "Actual SHA-256  : $actual"
+
+          if ($actual -ne $expected) {
+              throw "ISO SHA-256 verification failed."
+          }
+
+      # ------------------------------------------------------------
+      # 7. Inspect and extract XDVDFS ISO
+      # ------------------------------------------------------------
+
+      - name: Inspect ISO
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          xdvdfs info "$env:ISO_LOCAL_PATH"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "The downloaded file is not a readable XDVDFS image."
+          }
+
+          Write-Host "ISO root directory:"
+          xdvdfs ls "$env:ISO_LOCAL_PATH"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Unable to read the ISO root directory."
+          }
+
+      - name: Extract ISO to assets
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          New-Item `
+              -ItemType Directory `
+              -Path $env:ASSETS_DIR `
+              -Force |
+              Out-Null
+
+          xdvdfs unpack `
+              "$env:ISO_LOCAL_PATH" `
+              "$env:ASSETS_DIR"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "xdvdfs unpack failed."
+          }
+
+      # ------------------------------------------------------------
+      # 8. Normalize extracted game directory
+      # ------------------------------------------------------------
+
+      - name: Normalize assets directory
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $expectedXex = Join-Path `
+              $PWD `
+              'assets/default.xex'
+
+          if (
+              Test-Path `
+                  -LiteralPath $expectedXex `
+                  -PathType Leaf
+          ) {
+              Write-Host "default.xex found at assets/default.xex"
+              exit 0
+          }
+
+          $matches = @(
+              Get-ChildItem `
+                  -LiteralPath $env:ASSETS_DIR `
+                  -Recurse `
+                  -File `
+                  -Filter 'default.xex'
+          )
+
+          if ($matches.Count -eq 0) {
+              throw "No default.xex was found in the extracted ISO."
+          }
+
+          if ($matches.Count -gt 1) {
+              Write-Host "Multiple default.xex files were found:"
+
+              $matches |
+                  Select-Object FullName, Length |
+                  Format-Table -AutoSize
+
+              throw "Unable to determine the correct game root."
+          }
+
+          $gameRoot = $matches[0].Directory.FullName
+          $normalizedDirectory = Join-Path `
+              $PWD `
+              'assets-normalized'
+
+          if (Test-Path -LiteralPath $normalizedDirectory) {
+              Remove-Item `
+                  -LiteralPath $normalizedDirectory `
+                  -Recurse `
+                  -Force
+          }
+
+          New-Item `
+              -ItemType Directory `
+              -Path $normalizedDirectory `
+              -Force |
+              Out-Null
+
+          Get-ChildItem `
+              -LiteralPath $gameRoot `
+              -Force |
+              ForEach-Object {
+                  Copy-Item `
+                      -LiteralPath $_.FullName `
+                      -Destination $normalizedDirectory `
+                      -Recurse `
+                      -Force
+              }
+
+          Remove-Item `
+              -LiteralPath $env:ASSETS_DIR `
+              -Recurse `
+              -Force
+
+          Move-Item `
+              -LiteralPath $normalizedDirectory `
+              -Destination $env:ASSETS_DIR
+
+          if (-not (
+              Test-Path `
+                  -LiteralPath 'assets/default.xex' `
+                  -PathType Leaf
+          )) {
+              throw "Failed to normalize the assets directory."
+          }
+
+          Write-Host "Game root normalized to assets/."
+
+      - name: Verify extracted assets
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (-not (
+              Test-Path `
+                  -LiteralPath 'assets/default.xex' `
+                  -PathType Leaf
+          )) {
+              throw "assets/default.xex is missing."
+          }
+
+          $defaultXex = Get-Item `
+              -LiteralPath 'assets/default.xex'
+
+          if ($defaultXex.Length -eq 0) {
+              throw "assets/default.xex is empty."
+          }
+
+          $files = @(
+              Get-ChildItem `
+                  -LiteralPath assets `
+                  -Recurse `
+                  -File
+          )
+
+          $fileCount = $files.Count
+
+          $totalBytes = (
+              $files |
+              Measure-Object `
+                  -Property Length `
+                  -Sum
+          ).Sum
+
+          $totalGiB = [Math]::Round(
+              $totalBytes / 1GB,
+              3
+          )
+
+          Write-Host "default.xex size : $($defaultXex.Length) bytes"
+          Write-Host "Extracted files  : $fileCount"
+          Write-Host "Extracted size   : $totalGiB GiB"
+
+      # ------------------------------------------------------------
+      # 9. Delete ISO after extraction
+      # ------------------------------------------------------------
+
+      - name: Remove downloaded ISO
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          Remove-Item `
+              -LiteralPath $env:ISO_LOCAL_PATH `
+              -Force
+
+          if (Test-Path -LiteralPath $env:PRIVATE_INPUT_DIR) {
+              Remove-Item `
+                  -LiteralPath $env:PRIVATE_INPUT_DIR `
+                  -Recurse `
+                  -Force
+          }
+
+          Write-Host "Downloaded ISO removed."
+
+      # ------------------------------------------------------------
+      # 10. Initial CMake configuration
+      # ------------------------------------------------------------
+
+      - name: Initial CMake configure
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          cmake --preset "$env:CMAKE_PRESET"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Initial CMake configuration failed."
+          }
+
+      # ------------------------------------------------------------
+      # 11. Generate recompiled sources
+      # ------------------------------------------------------------
+
+      - name: Generate recompiled sources
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          cmake `
+              --build `
+              --preset "$env:CMAKE_PRESET" `
+              --target ac6recomp_codegen `
+              --parallel
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "AC6Recomp code generation failed."
+          }
+
+          if (-not (
+              Test-Path `
+                  -LiteralPath 'generated/sources.cmake' `
+                  -PathType Leaf
+          )) {
+              throw "generated/sources.cmake was not created."
+          }
+
+          $generatedCppCount = (
+              Get-ChildItem `
+                  -LiteralPath generated `
+                  -Recurse `
+                  -File `
+                  -Filter '*.cpp' |
+              Measure-Object
+          ).Count
+
+          Write-Host "Generated C++ files: $generatedCppCount"
+
+      # ------------------------------------------------------------
+      # 12. Reconfigure after code generation
+      # ------------------------------------------------------------
+
+      - name: Reconfigure CMake
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          cmake --preset "$env:CMAKE_PRESET"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "CMake reconfiguration failed."
+          }
+
+      # ------------------------------------------------------------
+      # 13. Build final executable
+      # ------------------------------------------------------------
+
+      - name: Build AC6Recomp
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          cmake `
+              --build `
+              --preset "$env:CMAKE_PRESET" `
+              --parallel
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "AC6Recomp compilation failed."
+          }
+
+      # ------------------------------------------------------------
+      # 14. Prepare artifact
+      # ------------------------------------------------------------
+
+      - name: Prepare artifact
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $executable = Join-Path `
+              $PWD `
+              "out/build/$env:CMAKE_PRESET/ac6recomp.exe"
+
+          if (-not (
+              Test-Path `
+                  -LiteralPath $executable `
+                  -PathType Leaf
+          )) {
+              throw "Executable was not found: $executable"
+          }
+
+          New-Item `
+              -ItemType Directory `
+              -Path $env:ARTIFACT_DIR `
+              -Force |
+              Out-Null
+
+          Copy-Item `
+              -LiteralPath $executable `
+              -Destination "$env:ARTIFACT_DIR/ac6recomp.exe" `
+              -Force
+
+          $hash = (
+              Get-FileHash `
+                  -LiteralPath "$env:ARTIFACT_DIR/ac6recomp.exe" `
+                  -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+
+          "$hash  ac6recomp.exe" |
+              Set-Content `
+                  -LiteralPath "$env:ARTIFACT_DIR/ac6recomp.exe.sha256" `
+                  -Encoding ascii
+
+          $artifactExecutable = Get-Item `
+              -LiteralPath "$env:ARTIFACT_DIR/ac6recomp.exe"
+
+          Write-Host "Executable size  : $($artifactExecutable.Length) bytes"
+          Write-Host "Executable hash  : $hash"
+
+      # ------------------------------------------------------------
+      # 15. Remove private files before artifact upload
+      # ------------------------------------------------------------
+
+      - name: Remove private build inputs
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          $sensitiveDirectories = @(
+              $env:PRIVATE_INPUT_DIR,
+              $env:ASSETS_DIR,
+              'assets-normalized',
+              'generated'
+          )
+
+          foreach ($directory in $sensitiveDirectories) {
+              if (Test-Path -LiteralPath $directory) {
+                  Write-Host "Removing sensitive directory: $directory"
+
+                  Remove-Item `
+                      -LiteralPath $directory `
+                      -Recurse `
+                      -Force `
+                      -ErrorAction Continue
+              }
+          }
+
+      # ------------------------------------------------------------
+      # 16. Upload final executable
+      # ------------------------------------------------------------
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AC6Recomp-win-amd64-relwithdebinfo-${{ github.sha }}
+          path: artifact/AC6Recomp/
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 14
