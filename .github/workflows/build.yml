@@ -49,6 +49,17 @@ jobs:
       ASSETS_DIR: assets
       ARTIFACT_DIR: artifact/AC6Recomp
 
+      # Pin xdvdfs-cli to a known-good version so builds stay reproducible
+      # and don't silently pick up breaking CLI changes.
+      XDVDFS_CLI_VERSION: 0.4.0
+
+      # sccache config: local disk cache, capped size so it doesn't grow
+      # unbounded across cache restores.
+      SCCACHE_DIR: ${{ github.workspace }}\.sccache
+      SCCACHE_CACHE_SIZE: 2G
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
+
     steps:
       # ------------------------------------------------------------
       # 1. Checkout
@@ -100,7 +111,81 @@ jobs:
           Write-Host "ISO SHA-256  : $normalizedHash"
 
       # ------------------------------------------------------------
-      # 3. Verify runner toolchain
+      # 3. Cache Cargo registry (speeds up xdvdfs-cli / sccache installs)
+      # ------------------------------------------------------------
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\bin
+          key: cargo-win-${{ env.XDVDFS_CLI_VERSION }}-sccache
+
+      # ------------------------------------------------------------
+      # 4. Install xdvdfs-cli
+      # ------------------------------------------------------------
+
+      - name: Install xdvdfs-cli
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (Get-Command xdvdfs -ErrorAction SilentlyContinue) {
+              Write-Host "xdvdfs already present, skipping install."
+              xdvdfs --version
+              exit 0
+          }
+
+          Write-Host "Installing xdvdfs-cli v$env:XDVDFS_CLI_VERSION via cargo..."
+
+          cargo install xdvdfs-cli `
+              --version "$env:XDVDFS_CLI_VERSION" `
+              --locked
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Failed to install xdvdfs-cli via cargo."
+          }
+
+          if (-not (Get-Command xdvdfs -ErrorAction SilentlyContinue)) {
+              throw "xdvdfs was installed but is not on PATH. Check that ~/.cargo/bin is on PATH."
+          }
+
+          xdvdfs --version
+
+      # ------------------------------------------------------------
+      # 5. Install sccache (compiler cache, cuts rebuild time)
+      # ------------------------------------------------------------
+
+      - name: Install sccache
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (Get-Command sccache -ErrorAction SilentlyContinue) {
+              Write-Host "sccache already present, skipping install."
+              sccache --version
+              exit 0
+          }
+
+          cargo install sccache --locked
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Failed to install sccache via cargo."
+          }
+
+      - name: Restore sccache cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SCCACHE_DIR }}
+          # Keyed on preset + commit so a re-run of the *same* commit gets a
+          # full hit, while a new commit still gets partial hits on unchanged
+          # object files. Falls back to the most recent cache for the preset
+          # via restore-keys.
+          key: sccache-${{ env.CMAKE_PRESET }}-${{ github.sha }}
+          restore-keys: |
+            sccache-${{ env.CMAKE_PRESET }}-
+
+      # ------------------------------------------------------------
+      # 6. Verify runner toolchain
       # ------------------------------------------------------------
 
       - name: Verify toolchain
@@ -114,6 +199,7 @@ jobs:
               'clang',
               'clang++',
               'xdvdfs',
+              'sccache',
               'curl.exe'
           )
 
@@ -131,6 +217,7 @@ jobs:
           clang --version
           clang++ --version
           xdvdfs --version
+          sccache --version
           curl.exe --version
 
           $cmakeVersionLine = (
@@ -153,7 +240,7 @@ jobs:
           }
 
       # ------------------------------------------------------------
-      # 4. Clean previous workspace data
+      # 7. Clean previous workspace data
       # ------------------------------------------------------------
 
       - name: Clean workspace
@@ -187,7 +274,7 @@ jobs:
               Out-Null
 
       # ------------------------------------------------------------
-      # 5. Download ISO
+      # 8. Download ISO
       # ------------------------------------------------------------
 
       - name: Download ISO
@@ -231,7 +318,7 @@ jobs:
           Write-Host "Downloaded ISO size: $sizeGiB GiB"
 
       # ------------------------------------------------------------
-      # 6. Verify ISO SHA-256
+      # 9. Verify ISO SHA-256
       # ------------------------------------------------------------
 
       - name: Verify ISO SHA-256
@@ -256,7 +343,7 @@ jobs:
           }
 
       # ------------------------------------------------------------
-      # 7. Inspect and extract XDVDFS ISO
+      # 10. Inspect and extract XDVDFS ISO
       # ------------------------------------------------------------
 
       - name: Inspect ISO
@@ -295,7 +382,7 @@ jobs:
           }
 
       # ------------------------------------------------------------
-      # 8. Normalize extracted game directory
+      # 11. Normalize extracted game directory
       # ------------------------------------------------------------
 
       - name: Normalize assets directory
@@ -430,7 +517,7 @@ jobs:
           Write-Host "Extracted size   : $totalGiB GiB"
 
       # ------------------------------------------------------------
-      # 9. Delete ISO after extraction
+      # 12. Delete ISO after extraction
       # ------------------------------------------------------------
 
       - name: Remove downloaded ISO
@@ -451,7 +538,7 @@ jobs:
           Write-Host "Downloaded ISO removed."
 
       # ------------------------------------------------------------
-      # 10. Initial CMake configuration
+      # 13. Initial CMake configuration
       # ------------------------------------------------------------
 
       - name: Initial CMake configure
@@ -465,7 +552,7 @@ jobs:
           }
 
       # ------------------------------------------------------------
-      # 11. Generate recompiled sources
+      # 14. Generate recompiled sources
       # ------------------------------------------------------------
 
       - name: Generate recompiled sources
@@ -502,7 +589,7 @@ jobs:
           Write-Host "Generated C++ files: $generatedCppCount"
 
       # ------------------------------------------------------------
-      # 12. Reconfigure after code generation
+      # 15. Reconfigure after code generation
       # ------------------------------------------------------------
 
       - name: Reconfigure CMake
@@ -516,7 +603,7 @@ jobs:
           }
 
       # ------------------------------------------------------------
-      # 13. Build final executable
+      # 16. Build final executable
       # ------------------------------------------------------------
 
       - name: Build AC6Recomp
@@ -532,8 +619,11 @@ jobs:
               throw "AC6Recomp compilation failed."
           }
 
+          Write-Host "--- sccache stats ---"
+          sccache --show-stats
+
       # ------------------------------------------------------------
-      # 14. Prepare artifact
+      # 17. Prepare artifact
       # ------------------------------------------------------------
 
       - name: Prepare artifact
@@ -581,7 +671,7 @@ jobs:
           Write-Host "Executable hash  : $hash"
 
       # ------------------------------------------------------------
-      # 15. Remove private files before artifact upload
+      # 18. Remove private files before artifact upload
       # ------------------------------------------------------------
 
       - name: Remove private build inputs
@@ -609,7 +699,7 @@ jobs:
           }
 
       # ------------------------------------------------------------
-      # 16. Upload final executable
+      # 19. Upload final executable
       # ------------------------------------------------------------
 
       - name: Upload artifact
