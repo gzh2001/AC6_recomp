@@ -31,10 +31,7 @@ jobs:
     name: win-amd64-relwithdebinfo
 
     runs-on:
-      - self-hosted
-      - Windows
-      - X64
-      - ac6-builder
+      - windows-latest
 
     timeout-minutes: 240
 
