@@ -12,13 +12,12 @@ on:
       openlist_path:
         description: Path of the ISO on OpenList
         required: true
-        default: Ace Combat 6.iso
+        default: /share/Ace Combat 6.iso
         type: string
 
       iso_sha256:
         description: SHA-256 of the ISO
         required: true
-        default: 204c5e645d79da8776699c12f17bd069f869fbdb10ae79015d1a0ef2b743c98c
         type: string
 
 permissions:
@@ -51,9 +50,9 @@ jobs:
       ASSETS_DIR: assets
       ARTIFACT_DIR: artifact/AC6Recomp
 
-      # Pin xdvdfs-cli to a known-good version so builds stay reproducible
-      # and don't silently pick up breaking CLI changes.
-      XDVDFS_CLI_VERSION: 0.4.0
+      # Pin xdvdfs-cli to a known-good release asset so builds stay
+      # reproducible and don't silently pick up breaking CLI changes.
+      XDVDFS_RELEASE_URL: https://github.com/antangelo/xdvdfs/releases/download/v0.8.3/xdvdfs-windows-1cc850bf1b3487fad7ec7c9eed01d83e8fc75ba4.zip
 
       # sccache config: local disk cache, capped size so it doesn't grow
       # unbounded across cache restores.
@@ -208,7 +207,7 @@ jobs:
           path: |
             ~\.cargo\registry
             ~\.cargo\bin
-          key: cargo-win-${{ env.XDVDFS_CLI_VERSION }}-sccache
+          key: cargo-win-sccache
 
       # ------------------------------------------------------------
       # 5. Install xdvdfs-cli
@@ -224,21 +223,57 @@ jobs:
               exit 0
           }
 
-          Write-Host "Installing xdvdfs-cli v$env:XDVDFS_CLI_VERSION via cargo..."
+          $installDir = Join-Path $env:RUNNER_TEMP 'xdvdfs-cli'
+          $zipPath = Join-Path $env:RUNNER_TEMP 'xdvdfs-cli.zip'
 
-          cargo install xdvdfs-cli `
-              --version "$env:XDVDFS_CLI_VERSION" `
-              --locked
+          Write-Host "Downloading xdvdfs-cli from $env:XDVDFS_RELEASE_URL ..."
+
+          curl.exe `
+              --fail `
+              --location `
+              --retry 5 `
+              --retry-all-errors `
+              --retry-delay 5 `
+              --connect-timeout 30 `
+              --max-time 300 `
+              --output "$zipPath" `
+              "$env:XDVDFS_RELEASE_URL"
 
           if ($LASTEXITCODE -ne 0) {
-              throw "Failed to install xdvdfs-cli via cargo."
+              throw "xdvdfs-cli download failed with exit code $LASTEXITCODE."
           }
 
-          if (-not (Get-Command xdvdfs -ErrorAction SilentlyContinue)) {
-              throw "xdvdfs was installed but is not on PATH. Check that ~/.cargo/bin is on PATH."
+          if (Test-Path -LiteralPath $installDir) {
+              Remove-Item -LiteralPath $installDir -Recurse -Force
           }
+
+          Expand-Archive `
+              -LiteralPath $zipPath `
+              -DestinationPath $installDir `
+              -Force
+
+          $exe = Get-ChildItem `
+              -LiteralPath $installDir `
+              -Recurse `
+              -File `
+              -Filter 'xdvdfs.exe' |
+              Select-Object -First 1
+
+          if (-not $exe) {
+              throw "xdvdfs.exe was not found inside the downloaded release archive."
+          }
+
+          # Persist PATH change for later steps ...
+          Add-Content -Path $env:GITHUB_PATH -Value $exe.DirectoryName
+
+          # ... and make it usable for the remainder of this step too.
+          $env:PATH = "$($exe.DirectoryName);$env:PATH"
 
           xdvdfs --version
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "xdvdfs was installed but failed to run."
+          }
 
       # ------------------------------------------------------------
       # 6. Install sccache (compiler cache, cuts rebuild time)
