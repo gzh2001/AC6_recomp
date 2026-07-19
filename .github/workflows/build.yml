@@ -12,7 +12,7 @@ on:
       openlist_path:
         description: Path of the ISO on OpenList
         required: true
-        default: /share/Ace Combat 6.iso
+        default: Ace Combat 6.iso
         type: string
 
       iso_sha256:
