@@ -9,14 +9,16 @@ on:
         default: main
         type: string
 
-      iso_url:
-        description: Direct HTTPS URL of the AC6 ISO
+      openlist_path:
+        description: Path of the ISO on OpenList
         required: true
+        default: /share/Ace Combat 6.iso
         type: string
 
       iso_sha256:
         description: SHA-256 of the ISO
         required: true
+        default: 204c5e645d79da8776699c12f17bd069f869fbdb10ae79015d1a0ef2b743c98c
         type: string
 
 permissions:
@@ -40,7 +42,7 @@ jobs:
         shell: pwsh
 
     env:
-      ISO_URL: ${{ inputs.iso_url }}
+      OPENLIST_PATH: ${{ inputs.openlist_path }}
       EXPECTED_ISO_SHA256: ${{ inputs.iso_sha256 }}
 
       CMAKE_PRESET: win-amd64-relwithdebinfo
@@ -81,12 +83,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          if ([string]::IsNullOrWhiteSpace($env:ISO_URL)) {
-              throw "ISO URL was not provided."
-          }
-
-          if ($env:ISO_URL -notmatch '^https://') {
-              throw "ISO URL must use HTTPS."
+          if ([string]::IsNullOrWhiteSpace($env:OPENLIST_PATH)) {
+              throw "OpenList path was not provided."
           }
 
           if ([string]::IsNullOrWhiteSpace(
@@ -105,13 +103,103 @@ jobs:
           "@
           }
 
-          Write-Host "Source ref   : ${{ inputs.source_ref }}"
-          Write-Host "CMake preset : $env:CMAKE_PRESET"
-          Write-Host "ISO URL      : configured"
-          Write-Host "ISO SHA-256  : $normalizedHash"
+          Write-Host "Source ref    : ${{ inputs.source_ref }}"
+          Write-Host "CMake preset  : $env:CMAKE_PRESET"
+          Write-Host "OpenList path : $env:OPENLIST_PATH"
+          Write-Host "ISO SHA-256   : $normalizedHash"
 
       # ------------------------------------------------------------
-      # 3. Cache Cargo registry (speeds up xdvdfs-cli / sccache installs)
+      # 3. Authenticate with OpenList and resolve the download URL
+      # ------------------------------------------------------------
+
+      - name: Resolve ISO download URL via OpenList
+        env:
+          OPENLIST_SERVER: ${{ secrets.OPENLIST_SERVER }}
+          OPENLIST_USERNAME: ${{ secrets.OPENLIST_USERNAME }}
+          OPENLIST_PASSWORD: ${{ secrets.OPENLIST_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if ([string]::IsNullOrWhiteSpace($env:OPENLIST_SERVER)) {
+              throw "OPENLIST_SERVER secret is not set."
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:OPENLIST_USERNAME)) {
+              throw "OPENLIST_USERNAME secret is not set."
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:OPENLIST_PASSWORD)) {
+              throw "OPENLIST_PASSWORD secret is not set."
+          }
+
+          $server = $env:OPENLIST_SERVER.TrimEnd('/')
+
+          # --- Log in and obtain a JWT token ---
+          $loginBody = @{
+              username = $env:OPENLIST_USERNAME
+              password = $env:OPENLIST_PASSWORD
+          } | ConvertTo-Json
+
+          $loginResponse = Invoke-RestMethod `
+              -Uri "$server/api/auth/login" `
+              -Method Post `
+              -ContentType 'application/json' `
+              -Body $loginBody
+
+          if ($loginResponse.code -ne 200) {
+              throw "OpenList login failed: $($loginResponse.message)"
+          }
+
+          $token = $loginResponse.data.token
+
+          if ([string]::IsNullOrWhiteSpace($token)) {
+              throw "OpenList login did not return a token."
+          }
+
+          # Prevent the token from ever showing up in the run log.
+          Write-Host "::add-mask::$token"
+
+          # --- Resolve the file's raw_url via fs/get ---
+          $fsGetBody = @{
+              path     = $env:OPENLIST_PATH
+              password = ''
+          } | ConvertTo-Json
+
+          $fsGetResponse = Invoke-RestMethod `
+              -Uri "$server/api/fs/get" `
+              -Method Post `
+              -ContentType 'application/json' `
+              -Headers @{ Authorization = $token } `
+              -Body $fsGetBody
+
+          if ($fsGetResponse.code -ne 200) {
+              throw "OpenList fs/get failed: $($fsGetResponse.message)"
+          }
+
+          $rawUrl = $fsGetResponse.data.raw_url
+
+          if ([string]::IsNullOrWhiteSpace($rawUrl)) {
+              throw "OpenList did not return a raw_url for the requested path."
+          }
+
+          if ($rawUrl -notmatch '^https://') {
+              throw "Resolved raw_url does not use HTTPS."
+          }
+
+          # raw_url can carry a signed/temporary token in its query string,
+          # so mask it too before it's ever written to a log line.
+          Write-Host "::add-mask::$rawUrl"
+
+          "RESOLVED_ISO_URL=$rawUrl" |
+              Out-File `
+                  -FilePath $env:GITHUB_ENV `
+                  -Append `
+                  -Encoding utf8
+
+          Write-Host "Resolved ISO download URL from OpenList."
+
+      # ------------------------------------------------------------
+      # 4. Cache Cargo registry (speeds up xdvdfs-cli / sccache installs)
       # ------------------------------------------------------------
 
       - name: Cache Cargo registry
@@ -123,7 +211,7 @@ jobs:
           key: cargo-win-${{ env.XDVDFS_CLI_VERSION }}-sccache
 
       # ------------------------------------------------------------
-      # 4. Install xdvdfs-cli
+      # 5. Install xdvdfs-cli
       # ------------------------------------------------------------
 
       - name: Install xdvdfs-cli
@@ -153,7 +241,7 @@ jobs:
           xdvdfs --version
 
       # ------------------------------------------------------------
-      # 5. Install sccache (compiler cache, cuts rebuild time)
+      # 6. Install sccache (compiler cache, cuts rebuild time)
       # ------------------------------------------------------------
 
       - name: Install sccache
@@ -185,7 +273,7 @@ jobs:
             sccache-${{ env.CMAKE_PRESET }}-
 
       # ------------------------------------------------------------
-      # 6. Verify runner toolchain
+      # 7. Verify runner toolchain
       # ------------------------------------------------------------
 
       - name: Verify toolchain
@@ -240,7 +328,7 @@ jobs:
           }
 
       # ------------------------------------------------------------
-      # 7. Clean previous workspace data
+      # 8. Clean previous workspace data
       # ------------------------------------------------------------
 
       - name: Clean workspace
@@ -274,7 +362,7 @@ jobs:
               Out-Null
 
       # ------------------------------------------------------------
-      # 8. Download ISO
+      # 9. Download ISO
       # ------------------------------------------------------------
 
       - name: Download ISO
@@ -290,7 +378,7 @@ jobs:
               --connect-timeout 30 `
               --max-time 14400 `
               --output "$env:ISO_LOCAL_PATH" `
-              "$env:ISO_URL"
+              "$env:RESOLVED_ISO_URL"
 
           if ($LASTEXITCODE -ne 0) {
               throw "ISO download failed with exit code $LASTEXITCODE."
@@ -318,7 +406,7 @@ jobs:
           Write-Host "Downloaded ISO size: $sizeGiB GiB"
 
       # ------------------------------------------------------------
-      # 9. Verify ISO SHA-256
+      # 10. Verify ISO SHA-256
       # ------------------------------------------------------------
 
       - name: Verify ISO SHA-256
@@ -343,7 +431,7 @@ jobs:
           }
 
       # ------------------------------------------------------------
-      # 10. Inspect and extract XDVDFS ISO
+      # 11. Inspect and extract XDVDFS ISO
       # ------------------------------------------------------------
 
       - name: Inspect ISO
@@ -382,7 +470,7 @@ jobs:
           }
 
       # ------------------------------------------------------------
-      # 11. Normalize extracted game directory
+      # 12. Normalize extracted game directory
       # ------------------------------------------------------------
 
       - name: Normalize assets directory
@@ -517,7 +605,7 @@ jobs:
           Write-Host "Extracted size   : $totalGiB GiB"
 
       # ------------------------------------------------------------
-      # 12. Delete ISO after extraction
+      # 13. Delete ISO after extraction
       # ------------------------------------------------------------
 
       - name: Remove downloaded ISO
@@ -538,7 +626,7 @@ jobs:
           Write-Host "Downloaded ISO removed."
 
       # ------------------------------------------------------------
-      # 13. Initial CMake configuration
+      # 14. Initial CMake configuration
       # ------------------------------------------------------------
 
       - name: Initial CMake configure
@@ -552,7 +640,7 @@ jobs:
           }
 
       # ------------------------------------------------------------
-      # 14. Generate recompiled sources
+      # 15. Generate recompiled sources
       # ------------------------------------------------------------
 
       - name: Generate recompiled sources
@@ -589,7 +677,7 @@ jobs:
           Write-Host "Generated C++ files: $generatedCppCount"
 
       # ------------------------------------------------------------
-      # 15. Reconfigure after code generation
+      # 16. Reconfigure after code generation
       # ------------------------------------------------------------
 
       - name: Reconfigure CMake
@@ -603,7 +691,7 @@ jobs:
           }
 
       # ------------------------------------------------------------
-      # 16. Build final executable
+      # 17. Build final executable
       # ------------------------------------------------------------
 
       - name: Build AC6Recomp
@@ -623,7 +711,7 @@ jobs:
           sccache --show-stats
 
       # ------------------------------------------------------------
-      # 17. Prepare artifact
+      # 18. Prepare artifact
       # ------------------------------------------------------------
 
       - name: Prepare artifact
@@ -671,7 +759,7 @@ jobs:
           Write-Host "Executable hash  : $hash"
 
       # ------------------------------------------------------------
-      # 18. Remove private files before artifact upload
+      # 19. Remove private files before artifact upload
       # ------------------------------------------------------------
 
       - name: Remove private build inputs
@@ -699,7 +787,7 @@ jobs:
           }
 
       # ------------------------------------------------------------
-      # 19. Upload final executable
+      # 20. Upload final executable
       # ------------------------------------------------------------
 
       - name: Upload artifact
